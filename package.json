@@ -1,6 +1,6 @@
 {
   "name": "pi-slopchop",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "description": "Terminal-native code review and annotation workflow for the Pi coding agent.",
   "author": "Rob Zolkos <rob@zolkos.com>",
