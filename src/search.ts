@@ -61,7 +61,7 @@ export function getFileSearchScore(query: string, file: ReviewFile): number {
 
 export function filterFilesBySearch(files: ReviewFile[], query: string): ReviewFile[] {
   const normalizedQuery = normalizeQuery(query);
-  if (!normalizedQuery) return [...files].sort((a, b) => a.path.localeCompare(b.path));
+  if (!normalizedQuery) return [...files];
 
   return files
     .map((file) => ({ file, score: getFileSearchScore(normalizedQuery, file) }))

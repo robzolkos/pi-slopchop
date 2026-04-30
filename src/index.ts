@@ -28,6 +28,7 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
 
       const result = await runReviewApp(ctx, {
         files,
+        repoRoot,
         loadFileContents: (file, scope) => loadReviewFileContents(pi, repoRoot, file, scope),
         commentShortcuts: shortcutConfig.shortcuts,
       });

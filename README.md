@@ -61,12 +61,15 @@ ctrl+alt+s
 2. Pick a scope:
    - `git diff` — review your current uncommitted working tree changes against `HEAD`
    - `last commit` — review the most recent commit against its parent
-   - `all files` — review current file contents without diff-only filtering
+   - `all files` — review files changed on the current branch compared with the default branch; if there are no changed scopes, falls back to current file contents
 
    By default, `/slopchop` opens the first scope that makes sense for the repo in this order:
    - `git diff` if there are uncommitted changes
+   - otherwise `all files` if the current branch differs from the default branch
    - otherwise `last commit` if there is a reviewable last commit
-   - otherwise `all files`
+   - otherwise `all files` as a current-file fallback
+
+   In the branch-level `all files` scope, files are ordered for review priority: changed files referenced by more other changed files come first, then modified/renamed before added before deleted, then source files before tests/docs/changesets, then path order. The navigator can filter to files related to the active file with `r`. In related mode, `→` means the active file references that file, `←` means that file references the active file, and `↔` means both. Press `r` again to return to all files.
 3. Move to the file and line you care about
 4. Add annotations:
    - `f` for a line annotation with `FIX` preselected
@@ -158,23 +161,30 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 #### Global
 
 - `1 / 2 / 3` — switch scope
+- mouse wheel — scroll the pane under the cursor
 - `Tab` — cycle focus: navigator → diff → comments
 - `/` — search files, or open slash shortcuts in diff focus
 - `?` — toggle help in the right sidebar
 - `w` — toggle wrapping
 - `u` — toggle unchanged context in diff scopes
+- `h` — hide/show the comments pane
 - `s` — insert the generated prompt into the editor
 - `Esc` — cancel the review
 
 #### Navigator
 
 - `↑↓` or `j/k` — move between files
+- `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
+- `r` — toggle related-files filter in `all files` scope
+- file rows show change counts as `+added -deleted`
 - `Enter` — move focus to diff
 
 #### Diff
 
 - `↑↓` or `j/k` — move between selectable added/deleted lines
+- `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
 - `n / p` — next / previous hunk
+- `o` — open the selected line in `$EDITOR`, then return to `/slopchop` when the editor exits
 - `f` — line comment, default `FIX`
 - `d` or `c` — line comment, default `DISCUSS`
 - `e` — edit the existing line comment on the selected line
@@ -191,6 +201,7 @@ Line comment markers in the diff gutter:
 #### Comments panel
 
 - `↑↓` or `j/k` — move through saved comments
+- `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
 - `e` or `Enter` — edit selected comment
 - `d` — delete selected comment
 

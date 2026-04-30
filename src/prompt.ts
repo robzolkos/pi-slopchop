@@ -3,7 +3,7 @@ import { formatIntentLabel } from "./types.js";
 
 function getCommentFilePath(file: ReviewFile | undefined, scope: ReviewScope): string {
   if (file == null) return "(unknown file)";
-  const comparison = scope === "git-diff" ? file.gitDiff : scope === "last-commit" ? file.lastCommit : null;
+  const comparison = scope === "git-diff" ? file.gitDiff : scope === "last-commit" ? file.lastCommit : file.allFiles;
   return comparison?.displayPath ?? file.path;
 }
 

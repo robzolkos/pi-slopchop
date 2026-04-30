@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import { adjustStructuredDiffContext, buildStructuredDiff, type StructuredDiff, type StructuredDiffVisibleItem } from "../diff.js";
@@ -10,12 +12,10 @@ import {
   ensureActiveFile,
   getCommentsForFileScope,
   getFileComment,
-  getFilteredFiles,
   getLineComment,
   getScopedFiles,
   getSelectedLineTarget,
   hasDraftContent,
-  moveActiveFile,
   moveSelectedCommentIndex,
   moveSelectedLineTarget,
   setActiveFileId,
@@ -31,6 +31,7 @@ import {
 } from "../state.js";
 import { detectPiLanguage, highlightCodeLineWithPi } from "../pi-render.js";
 import { getShortcutConfigPath, getShortcutsForSide, type CommentShortcut } from "../shortcuts.js";
+import { filterFilesBySearch } from "../search.js";
 import { highlightJsonLine, highlightMarkdownLine } from "../theme-highlight.js";
 import type { CommentIntent, DiffReviewComment, ReviewFile, ReviewFileContents, ReviewLineTarget, ReviewResult, ReviewScope, ReviewState } from "../types.js";
 import { formatIntentLabel, formatScopeLabel } from "../types.js";
@@ -63,13 +64,138 @@ type CommentPanelItem =
 
 interface ReviewAppOptions {
   files: ReviewFile[];
+  repoRoot: string;
   loadFileContents: (file: ReviewFile, scope: ReviewScope) => Promise<ReviewFileContents>;
   commentShortcuts: CommentShortcut[];
   notify: ExtensionContext["ui"]["notify"];
 }
 
+interface MousePaneLayout {
+  bodyTop: number;
+  bodyBottom: number;
+  navigatorLeft: number;
+  navigatorRight: number;
+  diffLeft: number;
+  diffRight: number;
+  commentsLeft: number | null;
+  commentsRight: number | null;
+}
+
 const SEARCHABLE_SCOPES: ReviewScope[] = ["git-diff", "last-commit", "all-files"];
 const DEFAULT_CONTEXT_LINES = 3;
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function buildEditorLaunchCommand(editorCommand: string, filePath: string, line: number): string {
+  const lineNumber = Math.max(1, Math.floor(line));
+  return `${editorCommand.trim() || "vi"} +${lineNumber} -- ${shellQuote(filePath)}`;
+}
+
+function runShellCommand(command: string, cwd: string): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      cwd,
+      env: process.env,
+      shell: true,
+      stdio: "inherit",
+    });
+
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code));
+  });
+}
+
+export function getEditorLineForTarget(diff: StructuredDiff, target: ReviewLineTarget): number {
+  if (target.side === "added") return target.line;
+
+  const rowIndex = diff.rows.findIndex((row) => row.oldLineNumber === target.line);
+  if (rowIndex < 0) return target.line;
+
+  const selectedRow = diff.rows[rowIndex]!;
+  if (selectedRow.newLineNumber != null) return selectedRow.newLineNumber;
+
+  for (let index = rowIndex + 1; index < diff.rows.length; index += 1) {
+    const line = diff.rows[index]!.newLineNumber;
+    if (line != null) return line;
+  }
+
+  for (let index = rowIndex - 1; index >= 0; index -= 1) {
+    const line = diff.rows[index]!.newLineNumber;
+    if (line != null) return line;
+  }
+
+  return 1;
+}
+
+export function getHalfPageStep(visibleRows: number): number {
+  return Math.max(1, Math.floor(visibleRows / 2));
+}
+
+export function getPaneLayout(frameInnerWidth: number, commentsHidden: boolean): { navigatorWidth: number; diffWidth: number; commentsWidth: number } {
+  const navigatorWidth = Math.max(24, Math.min(36, Math.floor(frameInnerWidth * 0.26)));
+  if (commentsHidden) {
+    return {
+      navigatorWidth,
+      diffWidth: Math.max(24, frameInnerWidth - navigatorWidth - 1),
+      commentsWidth: 0,
+    };
+  }
+
+  const commentsWidth = Math.max(24, Math.min(36, Math.floor(frameInnerWidth * 0.27)));
+  return {
+    navigatorWidth,
+    commentsWidth,
+    diffWidth: Math.max(24, frameInnerWidth - navigatorWidth - commentsWidth - 2),
+  };
+}
+
+export type MouseWheelDirection = "up" | "down";
+
+export interface MouseWheelEvent {
+  direction: MouseWheelDirection;
+  col: number;
+  row: number;
+}
+
+export function parseMouseWheelInput(data: string): MouseWheelEvent | null {
+  const match = data.match(/^\x1b\[<(\d+);(\d+);(\d+)[Mm]$/);
+  if (match == null) return null;
+
+  const button = Number.parseInt(match[1]!, 10);
+  if ((button & 64) === 0) return null;
+
+  const wheelButton = button & 3;
+  if (wheelButton !== 0 && wheelButton !== 1) return null;
+
+  return {
+    direction: wheelButton === 0 ? "up" : "down",
+    col: Number.parseInt(match[2]!, 10),
+    row: Number.parseInt(match[3]!, 10),
+  };
+}
+
+type PaneName = "navigator" | "diff" | "comments";
+
+type RelatedFileMarker = "→" | "←" | "↔";
+
+export function getRelatedFilePaths(file: ReviewFile | null): Set<string> {
+  return new Set([
+    ...(file?.allFilesOutgoingReferences ?? []),
+    ...(file?.allFilesIncomingReferences ?? []),
+  ]);
+}
+
+export function getRelatedFileMarker(file: ReviewFile, activeFile: ReviewFile | null, scope: ReviewScope): RelatedFileMarker | null {
+  if (activeFile == null || scope !== "all-files" || file.id === activeFile.id) return null;
+  const outgoing = new Set(activeFile.allFilesOutgoingReferences ?? []).has(file.path);
+  const incoming = new Set(activeFile.allFilesIncomingReferences ?? []).has(file.path);
+  if (outgoing && incoming) return "↔";
+  if (outgoing) return "→";
+  if (incoming) return "←";
+  return null;
+}
 
 type Theme = Parameters<ExtensionContext["ui"]["custom"]>[0] extends (tui: any, theme: infer T, kb: any, done: any) => any ? T : never;
 
@@ -94,7 +220,7 @@ function getScopeComparison(file: ReviewFile | null, scope: ReviewScope) {
   if (file == null) return null;
   if (scope === "git-diff") return file.gitDiff;
   if (scope === "last-commit") return file.lastCommit;
-  return null;
+  return file.allFiles;
 }
 
 function getScopeDisplayPath(file: ReviewFile | null, scope: ReviewScope): string {
@@ -111,6 +237,17 @@ function getStatusLabel(file: ReviewFile | null, scope: ReviewScope): string {
     case "modified": return "M";
     default: return "·";
   }
+}
+
+function getChangeCountLabel(theme: Theme, file: ReviewFile, scope: ReviewScope): string {
+  const comparison = getScopeComparison(file, scope);
+  const additions = comparison?.additions;
+  const deletions = comparison?.deletions;
+  if (additions == null && deletions == null) return "";
+  const safeAdditions = additions ?? 0;
+  const safeDeletions = deletions ?? 0;
+  if (safeAdditions === 0 && safeDeletions === 0) return "";
+  return ` ${theme.fg("success", `+${safeAdditions}`)} ${theme.fg("error", `-${safeDeletions}`)}`;
 }
 
 function getFileCommentCount(state: ReviewState, fileId: string, scope: ReviewScope): number {
@@ -323,12 +460,21 @@ class ReviewApp {
   private searchBuffer = "";
   private shortcutMode = false;
   private helpMode = false;
+  private commentsHidden = false;
+  private externalEditorOpen = false;
   private editTarget: EditTarget | null = null;
   private editor: Editor;
   private message: string | null = null;
   private navigatorScroll = 0;
   private diffScroll = 0;
   private commentsScroll = 0;
+  private navigatorPageSize = 1;
+  private diffPageSize = 1;
+  private commentsPageSize = 1;
+  private relatedFilterAnchorFileId: string | null = null;
+  private relatedFilterReturnFileId: string | null = null;
+  private mousePaneLayout: MousePaneLayout | null = null;
+  private mouseTrackingEnabled = false;
   private lastWidth = 120;
   private readonly previousHardwareCursor: boolean;
   private readonly syntaxLineCache = new Map<string, string>();
@@ -359,6 +505,7 @@ class ReviewApp {
       ? this.tui.getShowHardwareCursor()
       : false;
     this.syncCursorMode();
+    this.setMouseTracking(true);
 
     queueMicrotask(() => {
       this.ensureActiveEntry();
@@ -367,6 +514,7 @@ class ReviewApp {
   }
 
   dispose(): void {
+    this.setMouseTracking(false);
     if (typeof this.tui.setShowHardwareCursor === "function") {
       this.tui.setShowHardwareCursor(this.previousHardwareCursor);
     }
@@ -389,6 +537,33 @@ class ReviewApp {
     if (typeof this.tui.requestRender === "function") {
       this.tui.requestRender();
     }
+  }
+
+  private writeTerminal(data: string): void {
+    if (typeof this.tui.terminal?.write === "function") {
+      this.tui.terminal.write(data);
+    } else {
+      process.stdout.write(data);
+    }
+  }
+
+  private setMouseTracking(enabled: boolean): void {
+    if (this.mouseTrackingEnabled === enabled) return;
+    this.mouseTrackingEnabled = enabled;
+    this.writeTerminal(enabled ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1000l\x1b[?1006l");
+  }
+
+  private getPaneAtMousePosition(col: number, row: number): PaneName | null {
+    const layout = this.mousePaneLayout;
+    if (layout == null) return null;
+
+    const zeroCol = col - 1;
+    const zeroRow = row - 1;
+    if (zeroRow < layout.bodyTop || zeroRow > layout.bodyBottom) return null;
+    if (zeroCol >= layout.navigatorLeft && zeroCol <= layout.navigatorRight) return "navigator";
+    if (zeroCol >= layout.diffLeft && zeroCol <= layout.diffRight) return "diff";
+    if (layout.commentsLeft != null && layout.commentsRight != null && zeroCol >= layout.commentsLeft && zeroCol <= layout.commentsRight) return "comments";
+    return null;
   }
 
   private getCachedHighlightedCode(tone: DiffTone, text: string, language: string | undefined): string {
@@ -457,6 +632,29 @@ class ReviewApp {
     return getCommentableLineTargets(diff);
   }
 
+  private relatedFilterAnchorFile(): ReviewFile | null {
+    if (this.relatedFilterAnchorFileId == null || this.state.activeScope !== "all-files") return null;
+    return this.options.files.find((file) => file.id === this.relatedFilterAnchorFileId) ?? null;
+  }
+
+  private getNavigatorFiles(): ReviewFile[] {
+    let files = getScopedFiles(this.options.files, this.state.activeScope);
+    const anchor = this.relatedFilterAnchorFile();
+
+    if (anchor != null) {
+      const relatedPaths = getRelatedFilePaths(anchor);
+      files = files
+        .filter((file) => file.id === anchor.id || relatedPaths.has(file.path))
+        .sort((a, b) => {
+          if (a.id === anchor.id) return -1;
+          if (b.id === anchor.id) return 1;
+          return 0;
+        });
+    }
+
+    return filterFilesBySearch(files, this.state.searchQuery);
+  }
+
   private ensureLineSelection(): void {
     const file = this.activeFile();
     if (file == null) return;
@@ -490,6 +688,8 @@ class ReviewApp {
   }
 
   private setScope(scope: ReviewScope): void {
+    this.relatedFilterAnchorFileId = null;
+    this.relatedFilterReturnFileId = null;
     this.state = setScope(this.state, this.options.files, scope);
     this.diffScroll = 0;
     this.navigatorScroll = 0;
@@ -499,6 +699,8 @@ class ReviewApp {
   }
 
   private openSearch(): void {
+    this.relatedFilterAnchorFileId = null;
+    this.relatedFilterReturnFileId = null;
     this.searchMode = true;
     this.searchBuffer = this.state.searchQuery;
     this.setMessage("Search files; Enter or Esc to finish.");
@@ -515,6 +717,7 @@ class ReviewApp {
   }
 
   private openEditor(target: EditTarget): void {
+    this.commentsHidden = false;
     this.editTarget = target;
     this.editor.setText(target.initialBody);
     this.syncCursorMode();
@@ -673,6 +876,62 @@ class ReviewApp {
     this.editLineComment();
   }
 
+  private async openSelectedLineInEditor(): Promise<void> {
+    if (this.externalEditorOpen) return;
+
+    const file = this.activeFile();
+    if (file == null) {
+      this.setMessage("No file selected.");
+      this.requestRender();
+      return;
+    }
+
+    if (!file.hasWorkingTreeFile) {
+      this.setMessage("Cannot open this file in $EDITOR because it does not exist in the working tree.");
+      this.requestRender();
+      return;
+    }
+
+    const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
+    if (target == null) {
+      this.setMessage("No selectable diff line to open in $EDITOR.");
+      this.requestRender();
+      return;
+    }
+
+    const diff = this.getDisplayDiff(file.id, this.state.activeScope);
+    if (diff == null) {
+      this.setMessage("Diff is still loading; try again in a moment.");
+      this.requestRender();
+      return;
+    }
+
+    const editorLine = getEditorLineForTarget(diff, target);
+    const editorCommand = (process.env.EDITOR || process.env.VISUAL || "vi").trim() || "vi";
+    const filePath = join(this.options.repoRoot, file.path);
+    const command = buildEditorLaunchCommand(editorCommand, filePath, editorLine);
+
+    this.externalEditorOpen = true;
+    this.setMessage(`Opening ${file.path}:${editorLine} in $EDITOR…`);
+    this.requestRender();
+
+    try {
+      this.setMouseTracking(false);
+      if (typeof this.tui.stop === "function") this.tui.stop();
+      if (typeof this.tui.terminal?.clearScreen === "function") this.tui.terminal.clearScreen();
+      const code = await runShellCommand(command, this.options.repoRoot);
+      this.setMessage(code === 0 ? `Returned from $EDITOR at ${file.path}:${editorLine}.` : `$EDITOR exited with code ${code ?? "unknown"}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.setMessage(`Could not open $EDITOR: ${message}`);
+    } finally {
+      this.externalEditorOpen = false;
+      if (typeof this.tui.start === "function") this.tui.start();
+      this.setMouseTracking(true);
+      if (typeof this.tui.requestRender === "function") this.tui.requestRender(true);
+    }
+  }
+
   private submit(): void {
     if (!hasDraftContent(this.state)) {
       this.setMessage("Add at least one line comment, file comment, or all note before submitting.");
@@ -735,6 +994,7 @@ class ReviewApp {
       this.requestRender();
       return;
     }
+    this.commentsHidden = false;
     this.helpMode = false;
     this.shortcutMode = true;
     this.requestRender();
@@ -747,7 +1007,122 @@ class ReviewApp {
 
   private toggleHelpMode(): void {
     this.helpMode = !this.helpMode;
+    if (this.helpMode) this.commentsHidden = false;
     this.requestRender();
+  }
+
+  private toggleCommentsPane(): void {
+    this.commentsHidden = !this.commentsHidden;
+    if (this.commentsHidden) this.helpMode = false;
+    if (this.commentsHidden && this.state.focus === "comments") {
+      this.state = setFocus(this.state, "diff");
+    }
+    this.requestRender();
+  }
+
+  private cycleVisibleFocus(backward = false): void {
+    if (!this.commentsHidden) {
+      this.state = backward ? cycleFocusBackward(this.state) : cycleFocus(this.state);
+      this.requestRender();
+      return;
+    }
+
+    const nextFocus = this.state.focus === "navigator" ? "diff" : "navigator";
+    this.state = setFocus(this.state, nextFocus);
+    this.requestRender();
+  }
+
+  private toggleRelatedFilter(): void {
+    if (this.relatedFilterAnchorFileId != null) {
+      const returnFileId = this.relatedFilterReturnFileId;
+      this.relatedFilterAnchorFileId = null;
+      this.relatedFilterReturnFileId = null;
+      if (returnFileId != null) {
+        this.state = setActiveFileId(this.state, this.options.files, returnFileId);
+        void this.ensureActiveEntry();
+      }
+      this.navigatorScroll = 0;
+      this.setMessage("Showing all files.");
+      this.requestRender();
+      return;
+    }
+
+    if (this.state.activeScope !== "all-files") {
+      this.setMessage("Related filter is only available in the all files scope.");
+      this.requestRender();
+      return;
+    }
+
+    const file = this.activeFile();
+    const relatedPaths = getRelatedFilePaths(file);
+    if (file == null || relatedPaths.size === 0) {
+      this.setMessage("No related files for the active file.");
+      this.requestRender();
+      return;
+    }
+
+    this.relatedFilterAnchorFileId = file.id;
+    this.relatedFilterReturnFileId = file.id;
+    this.navigatorScroll = 0;
+    this.setMessage(`Showing files related to ${file.path}. Press r to show all files.`);
+    this.requestRender();
+  }
+
+  private moveNavigatorSelection(delta: number): void {
+    const files = this.getNavigatorFiles();
+    if (files.length === 0) {
+      this.state = setActiveFileId(this.state, this.options.files, null);
+      this.requestRender();
+      return;
+    }
+
+    const index = files.findIndex((file) => file.id === this.state.activeFileId);
+    const currentIndex = index >= 0 ? index : 0;
+    const nextIndex = Math.max(0, Math.min(files.length - 1, currentIndex + delta));
+    this.state = setActiveFileId(this.state, this.options.files, files[nextIndex]!.id);
+    void this.ensureActiveEntry();
+    this.requestRender();
+  }
+
+  private moveDiffSelection(delta: number): void {
+    const file = this.activeFile();
+    if (file == null) return;
+    const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
+    this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, delta);
+    this.requestRender();
+  }
+
+  private moveCommentSelection(delta: number): void {
+    const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
+    this.state = moveSelectedCommentIndex(this.state, items.length, delta);
+    this.requestRender();
+  }
+
+  private handleMouseWheel(data: string): boolean {
+    const event = parseMouseWheelInput(data);
+    if (event == null) return false;
+
+    const pane = this.getPaneAtMousePosition(event.col, event.row);
+    if (pane == null) return true;
+
+    const delta = event.direction === "down" ? 1 : -1;
+    if (pane === "navigator") {
+      this.state = setFocus(this.state, "navigator");
+      this.moveNavigatorSelection(delta);
+      return true;
+    }
+    if (pane === "diff") {
+      this.state = setFocus(this.state, "diff");
+      this.moveDiffSelection(delta);
+      return true;
+    }
+    if (pane === "comments" && !this.commentsHidden) {
+      this.state = setFocus(this.state, "comments");
+      this.moveCommentSelection(delta);
+      return true;
+    }
+
+    return true;
   }
 
   private applyShortcutByKey(key: string): void {
@@ -797,6 +1172,9 @@ class ReviewApp {
   }
 
   handleInput(data: string): void {
+    if (this.externalEditorOpen) return;
+    if (this.handleMouseWheel(data)) return;
+
     if (this.editTarget != null) {
       if (matchesKey(data, Key.escape)) {
         this.cancelEditor();
@@ -843,9 +1221,10 @@ class ReviewApp {
     if (data === "1") { this.setScope("git-diff"); return; }
     if (data === "2") { this.setScope("last-commit"); return; }
     if (data === "3") { this.setScope("all-files"); return; }
-    if (matchesKey(data, Key.shift("tab"))) { this.state = cycleFocusBackward(this.state); this.requestRender(); return; }
-    if (matchesKey(data, Key.tab)) { this.state = cycleFocus(this.state); this.requestRender(); return; }
+    if (matchesKey(data, Key.shift("tab"))) { this.cycleVisibleFocus(true); return; }
+    if (matchesKey(data, Key.tab)) { this.cycleVisibleFocus(); return; }
     if (matchesKey(data, Key.escape)) { this.cancel(); return; }
+    if (data === "h") { this.toggleCommentsPane(); return; }
     if (data === "w") { this.state = setWrapLines(this.state, !this.state.wrapLines); this.requestRender(); return; }
     if (data === "u") { this.state = toggleHideUnchanged(this.state); this.ensureLineSelection(); this.requestRender(); return; }
     if (data === "s") { this.submit(); return; }
@@ -856,15 +1235,23 @@ class ReviewApp {
 
     if (this.state.focus === "navigator") {
       if (matchesKey(data, Key.down) || data === "j") {
-        this.state = moveActiveFile(this.state, this.options.files, 1);
-        void this.ensureActiveEntry();
-        this.requestRender();
+        this.moveNavigatorSelection(1);
         return;
       }
       if (matchesKey(data, Key.up) || data === "k") {
-        this.state = moveActiveFile(this.state, this.options.files, -1);
-        void this.ensureActiveEntry();
-        this.requestRender();
+        this.moveNavigatorSelection(-1);
+        return;
+      }
+      if (matchesKey(data, Key.ctrl("d"))) {
+        this.moveNavigatorSelection(getHalfPageStep(this.navigatorPageSize));
+        return;
+      }
+      if (matchesKey(data, Key.ctrl("u"))) {
+        this.moveNavigatorSelection(-getHalfPageStep(this.navigatorPageSize));
+        return;
+      }
+      if (data === "r") {
+        this.toggleRelatedFilter();
         return;
       }
       if (matchesKey(data, Key.enter)) {
@@ -881,15 +1268,24 @@ class ReviewApp {
       }
       const file = this.activeFile();
       if (file != null) {
-        const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
         if (matchesKey(data, Key.down) || data === "j") {
-          this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, 1);
-          this.requestRender();
+          this.moveDiffSelection(1);
           return;
         }
         if (matchesKey(data, Key.up) || data === "k") {
-          this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, -1);
-          this.requestRender();
+          this.moveDiffSelection(-1);
+          return;
+        }
+        if (matchesKey(data, Key.ctrl("d"))) {
+          this.moveDiffSelection(getHalfPageStep(this.diffPageSize));
+          return;
+        }
+        if (matchesKey(data, Key.ctrl("u"))) {
+          this.moveDiffSelection(-getHalfPageStep(this.diffPageSize));
+          return;
+        }
+        if (data === "o") {
+          void this.openSelectedLineInEditor();
           return;
         }
         if (data === "f") {
@@ -917,13 +1313,19 @@ class ReviewApp {
     if (this.state.focus === "comments") {
       const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
       if (matchesKey(data, Key.down) || data === "j") {
-        this.state = moveSelectedCommentIndex(this.state, items.length, 1);
-        this.requestRender();
+        this.moveCommentSelection(1);
         return;
       }
       if (matchesKey(data, Key.up) || data === "k") {
-        this.state = moveSelectedCommentIndex(this.state, items.length, -1);
-        this.requestRender();
+        this.moveCommentSelection(-1);
+        return;
+      }
+      if (matchesKey(data, Key.ctrl("d"))) {
+        this.moveCommentSelection(getHalfPageStep(this.commentsPageSize));
+        return;
+      }
+      if (matchesKey(data, Key.ctrl("u"))) {
+        this.moveCommentSelection(-getHalfPageStep(this.commentsPageSize));
         return;
       }
       if (data === "e" || matchesKey(data, Key.enter)) {
@@ -938,10 +1340,12 @@ class ReviewApp {
   }
 
   private renderNavigator(width: number, height: number): string[] {
-    const files = getFilteredFiles(this.options.files, this.state);
+    const files = this.getNavigatorFiles();
     const lines: string[] = [];
+    const relatedAnchor = this.relatedFilterAnchorFile();
+    const relatedSuffix = relatedAnchor == null ? "" : ` • related to ${shortenNavigatorPath(relatedAnchor.path, 24)}`;
     const titleSuffix = this.searchMode ? ` (${this.searchBuffer || "…"})` : this.state.searchQuery ? ` (${this.state.searchQuery})` : "";
-    lines.push(this.theme.fg("muted", `${files.length} file${files.length === 1 ? "" : "s"}${titleSuffix}`));
+    lines.push(this.theme.fg("muted", `${files.length} file${files.length === 1 ? "" : "s"}${titleSuffix}${relatedSuffix}`));
     lines.push("");
 
     if (files.length === 0) {
@@ -951,24 +1355,33 @@ class ReviewApp {
     }
 
     const maxBody = Math.max(1, height - 4);
+    this.navigatorPageSize = maxBody;
     const activeIndex = Math.max(0, files.findIndex((file) => file.id === this.state.activeFileId));
     if (activeIndex < this.navigatorScroll) this.navigatorScroll = activeIndex;
     if (activeIndex >= this.navigatorScroll + maxBody) this.navigatorScroll = activeIndex - maxBody + 1;
     const visible = files.slice(this.navigatorScroll, this.navigatorScroll + maxBody);
+    const activeFile = this.activeFile();
+    const relationSource = relatedAnchor ?? activeFile;
+    const relatedFilterActive = relatedAnchor != null;
 
     for (const file of visible) {
       const active = file.id === this.state.activeFileId;
-      const prefix = active ? this.theme.fg("accent", "›") : " ";
-      const status = this.theme.fg(active ? "accent" : "muted", getStatusLabel(file, this.state.activeScope));
+      const relationMarker = getRelatedFileMarker(file, relationSource, this.state.activeScope);
+      const related = relationMarker != null;
+      const prefix = relationMarker == null
+        ? active && !relatedFilterActive ? this.theme.fg("accent", "›") : " "
+        : this.theme.fg(active || !relatedFilterActive ? "accent" : "muted", relationMarker);
+      const status = this.theme.fg(active || (!relatedFilterActive && related) ? "accent" : "muted", getStatusLabel(file, this.state.activeScope));
       const count = getFileCommentCount(this.state, file.id, this.state.activeScope);
-      const marker = count > 0 ? this.theme.fg("success", ` ${count}●`) : this.theme.fg("dim", "  ·");
+      const changeMarker = getChangeCountLabel(this.theme, file, this.state.activeScope);
+      const commentMarker = count > 0 ? this.theme.fg("success", ` ${count}●`) : this.theme.fg("dim", "  ·");
       const prefixText = `${prefix} ${status} `;
-      const pathWidth = Math.max(1, width - 6 - visibleWidth(prefixText) - visibleWidth(marker));
+      const pathWidth = Math.max(1, width - 2 - visibleWidth(prefixText) - visibleWidth(changeMarker) - visibleWidth(commentMarker));
       const shortenedPath = shortenNavigatorPath(file.path, pathWidth);
-      const pathText = active
+      const pathText = active || (!relatedFilterActive && related)
         ? this.theme.fg("accent", shortenedPath)
         : this.theme.fg("text", shortenedPath);
-      lines.push(`${prefixText}${pathText}${marker}`);
+      lines.push(`${prefixText}${pathText}${changeMarker}${commentMarker}`);
     }
 
     return renderBox("Navigator", width, height, this.theme, lines, this.state.focus === "navigator");
@@ -1043,6 +1456,7 @@ class ReviewApp {
     }
 
     const maxBody = Math.max(1, height - 5);
+    this.diffPageSize = maxBody;
     if (selectedIndex < this.diffScroll) this.diffScroll = selectedIndex;
     if (selectedIndex >= this.diffScroll + maxBody) this.diffScroll = selectedIndex - maxBody + 1;
     lines.push(...rendered.slice(this.diffScroll, this.diffScroll + maxBody));
@@ -1057,9 +1471,9 @@ class ReviewApp {
     lines.push(this.theme.fg("muted", "? toggle help • Esc close"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
-    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / shortcuts/search • s submit"));
+    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / shortcuts/search • r related • h comments • s submit"));
     lines.push(this.theme.fg("muted", "f line fix • d/c line discuss • e edit line • x delete line"));
-    lines.push(this.theme.fg("muted", "l file • a all • n/p hunks"));
+    lines.push(this.theme.fg("muted", "Ctrl+d/u half-page • o open in $EDITOR • l file • a all • n/p hunks"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Editor"));
     lines.push(this.theme.fg("muted", "Tab toggle • Enter save • Shift+Enter newline • Esc cancel"));
@@ -1165,6 +1579,7 @@ class ReviewApp {
     }
 
     const maxBody = Math.max(1, height - 5);
+    this.commentsPageSize = maxBody;
     const activeIndex = Math.max(0, this.state.selectedCommentIndex);
     if (activeIndex < this.commentsScroll) this.commentsScroll = activeIndex;
     if (activeIndex >= this.commentsScroll + maxBody) this.commentsScroll = activeIndex - maxBody + 1;
@@ -1196,9 +1611,24 @@ class ReviewApp {
     const frameInnerWidth = Math.max(40, this.lastWidth - 2 - MODAL_INNER_PADDING_X * 2);
     const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
     const bodyHeight = Math.max(6, frameInnerHeight - 5);
-    const navigatorWidth = Math.max(24, Math.min(36, Math.floor(frameInnerWidth * 0.26)));
-    const commentsWidth = Math.max(24, Math.min(36, Math.floor(frameInnerWidth * 0.27)));
-    const diffWidth = Math.max(24, frameInnerWidth - navigatorWidth - commentsWidth - 2);
+    const { navigatorWidth, diffWidth, commentsWidth } = getPaneLayout(frameInnerWidth, this.commentsHidden);
+    const terminalCols = this.tui?.terminal?.columns ?? this.lastWidth;
+    const overlayOriginCol = Math.max(0, Math.floor((terminalCols - this.lastWidth) / 2));
+    const overlayOriginRow = Math.max(0, Math.floor((terminalRows - totalHeight) / 2));
+    const bodyTop = overlayOriginRow + 1 + MODAL_INNER_PADDING_Y + 1;
+    const contentLeft = overlayOriginCol + 1 + MODAL_INNER_PADDING_X;
+    const diffLeft = contentLeft + navigatorWidth + 1;
+    const commentsLeft = this.commentsHidden ? null : diffLeft + diffWidth + 1;
+    this.mousePaneLayout = {
+      bodyTop,
+      bodyBottom: bodyTop + bodyHeight - 1,
+      navigatorLeft: contentLeft,
+      navigatorRight: contentLeft + navigatorWidth - 1,
+      diffLeft,
+      diffRight: diffLeft + diffWidth - 1,
+      commentsLeft,
+      commentsRight: commentsLeft == null ? null : commentsLeft + commentsWidth - 1,
+    };
 
     const promptStatus = this.shortcutMode
       ? "Shortcut mode • choose from the right panel • Esc cancel"
@@ -1208,7 +1638,7 @@ class ReviewApp {
           ? `Search: ${this.searchBuffer}`
           : this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : "Tab focus • / search • ? help • 1/2/3 scopes • s submit • Esc cancel");
+            : `Tab focus • / search • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open • s submit • Esc cancel`);
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
@@ -1223,16 +1653,18 @@ class ReviewApp {
 
     const navigator = this.renderNavigator(navigatorWidth, bodyHeight);
     const diff = this.renderDiff(diffWidth, bodyHeight);
-    const comments = this.renderComments(commentsWidth, bodyHeight);
+    const comments = this.commentsHidden ? [] : this.renderComments(commentsWidth, bodyHeight);
     const body: string[] = [];
 
     for (let i = 0; i < bodyHeight; i += 1) {
-      body.push(`${navigator[i] ?? ""} ${diff[i] ?? ""} ${comments[i] ?? ""}`);
+      body.push(this.commentsHidden
+        ? `${navigator[i] ?? ""} ${diff[i] ?? ""}`
+        : `${navigator[i] ?? ""} ${diff[i] ?? ""} ${comments[i] ?? ""}`);
     }
 
     const footer = [
       truncateToWidth(this.theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files • diff: ↑↓ lines, / shortcuts, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
+      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, r related filter • diff: ↑↓ lines, Ctrl+d/u half-page, / shortcuts, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
     ];
 
     return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);

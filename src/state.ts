@@ -1,5 +1,5 @@
 import { filterFilesBySearch } from "./search.js";
-import type { CommentIntent, CommentSide, DiffReviewComment, ReviewFile, ReviewFocus, ReviewLineTarget, ReviewScope, ReviewState } from "./types.js";
+import type { ChangeStatus, CommentIntent, CommentSide, DiffReviewComment, ReviewFile, ReviewFocus, ReviewLineTarget, ReviewScope, ReviewState } from "./types.js";
 import { scopeFileKey } from "./types.js";
 
 function hasFilesForScope(files: ReviewFile[], scope: ReviewScope): boolean {
@@ -8,8 +8,42 @@ function hasFilesForScope(files: ReviewFile[], scope: ReviewScope): boolean {
 
 export function getDefaultScope(files: ReviewFile[]): ReviewScope {
   if (hasFilesForScope(files, "git-diff")) return "git-diff";
+  if (hasFilesForScope(files, "all-files")) return "all-files";
   if (hasFilesForScope(files, "last-commit")) return "last-commit";
   return "all-files";
+}
+
+function getAllFilesStatusRank(status: ChangeStatus | null | undefined): number {
+  if (status === "modified" || status === "renamed") return 0;
+  if (status === "added") return 1;
+  if (status === "deleted") return 2;
+  return 3;
+}
+
+function getAllFilesSupportRank(path: string): number {
+  const lowerPath = path.toLowerCase();
+  if (/(^|\/)(\.changeset|docs?|tests?|__tests__|__mocks__)(\/|$)/.test(lowerPath)) return 1;
+  if (/(^|\/)[^/]+\.(test|spec)\.[cm]?[jt]sx?$/.test(lowerPath)) return 1;
+  if (/\.(md|mdx|txt|ya?ml)$/.test(lowerPath)) return 1;
+  return 0;
+}
+
+/**
+ * Order branch-level "all files" changes for review, not for path browsing:
+ * most referenced changed files first, then modified/renamed before added before
+ * deleted, then source files before tests/docs/changesets, then path order.
+ */
+export function compareAllFilesForReview(a: ReviewFile, b: ReviewFile): number {
+  const referenceDelta = (b.allFilesReferenceCount ?? 0) - (a.allFilesReferenceCount ?? 0);
+  if (referenceDelta !== 0) return referenceDelta;
+
+  const statusDelta = getAllFilesStatusRank(a.allFiles?.status) - getAllFilesStatusRank(b.allFiles?.status);
+  if (statusDelta !== 0) return statusDelta;
+
+  const supportDelta = getAllFilesSupportRank(a.path) - getAllFilesSupportRank(b.path);
+  if (supportDelta !== 0) return supportDelta;
+
+  return a.path.localeCompare(b.path);
 }
 
 export function getScopedFiles(files: ReviewFile[], scope: ReviewScope): ReviewFile[] {
@@ -18,8 +52,11 @@ export function getScopedFiles(files: ReviewFile[], scope: ReviewScope): ReviewF
       return files.filter((file) => file.inGitDiff);
     case "last-commit":
       return files.filter((file) => file.inLastCommit);
-    case "all-files":
-      return files.filter((file) => file.hasWorkingTreeFile);
+    case "all-files": {
+      const scoped = files.filter((file) => file.inAllFiles);
+      if (!scoped.some((file) => file.allFiles != null)) return scoped;
+      return scoped.sort(compareAllFilesForReview);
+    }
   }
 }
 
