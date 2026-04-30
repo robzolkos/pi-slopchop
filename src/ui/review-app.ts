@@ -472,6 +472,7 @@ class ReviewApp {
   private diffPageSize = 1;
   private commentsPageSize = 1;
   private relatedFilterAnchorFileId: string | null = null;
+  private relatedFilterReturnFileId: string | null = null;
   private mousePaneLayout: MousePaneLayout | null = null;
   private mouseTrackingEnabled = false;
   private lastWidth = 120;
@@ -688,6 +689,7 @@ class ReviewApp {
 
   private setScope(scope: ReviewScope): void {
     this.relatedFilterAnchorFileId = null;
+    this.relatedFilterReturnFileId = null;
     this.state = setScope(this.state, this.options.files, scope);
     this.diffScroll = 0;
     this.navigatorScroll = 0;
@@ -698,6 +700,7 @@ class ReviewApp {
 
   private openSearch(): void {
     this.relatedFilterAnchorFileId = null;
+    this.relatedFilterReturnFileId = null;
     this.searchMode = true;
     this.searchBuffer = this.state.searchQuery;
     this.setMessage("Search files; Enter or Esc to finish.");
@@ -1031,7 +1034,13 @@ class ReviewApp {
 
   private toggleRelatedFilter(): void {
     if (this.relatedFilterAnchorFileId != null) {
+      const returnFileId = this.relatedFilterReturnFileId;
       this.relatedFilterAnchorFileId = null;
+      this.relatedFilterReturnFileId = null;
+      if (returnFileId != null) {
+        this.state = setActiveFileId(this.state, this.options.files, returnFileId);
+        void this.ensureActiveEntry();
+      }
       this.navigatorScroll = 0;
       this.setMessage("Showing all files.");
       this.requestRender();
@@ -1053,6 +1062,7 @@ class ReviewApp {
     }
 
     this.relatedFilterAnchorFileId = file.id;
+    this.relatedFilterReturnFileId = file.id;
     this.navigatorScroll = 0;
     this.setMessage(`Showing files related to ${file.path}. Press r to show all files.`);
     this.requestRender();
@@ -1350,25 +1360,27 @@ class ReviewApp {
     if (activeIndex < this.navigatorScroll) this.navigatorScroll = activeIndex;
     if (activeIndex >= this.navigatorScroll + maxBody) this.navigatorScroll = activeIndex - maxBody + 1;
     const visible = files.slice(this.navigatorScroll, this.navigatorScroll + maxBody);
-    const relationSource = relatedAnchor;
+    const activeFile = this.activeFile();
+    const relationSource = relatedAnchor ?? activeFile;
+    const relatedFilterActive = relatedAnchor != null;
 
     for (const file of visible) {
       const active = file.id === this.state.activeFileId;
       const relationMarker = getRelatedFileMarker(file, relationSource, this.state.activeScope);
       const related = relationMarker != null;
-      const prefix = active ? this.theme.fg("accent", "›") : related ? this.theme.fg("accent", relationMarker) : " ";
-      const status = this.theme.fg(active || related ? "accent" : "muted", getStatusLabel(file, this.state.activeScope));
+      const prefix = relationMarker == null
+        ? active && !relatedFilterActive ? this.theme.fg("accent", "›") : " "
+        : this.theme.fg(active || !relatedFilterActive ? "accent" : "muted", relationMarker);
+      const status = this.theme.fg(active || (!relatedFilterActive && related) ? "accent" : "muted", getStatusLabel(file, this.state.activeScope));
       const count = getFileCommentCount(this.state, file.id, this.state.activeScope);
       const changeMarker = getChangeCountLabel(this.theme, file, this.state.activeScope);
       const commentMarker = count > 0 ? this.theme.fg("success", ` ${count}●`) : this.theme.fg("dim", "  ·");
       const prefixText = `${prefix} ${status} `;
       const pathWidth = Math.max(1, width - 2 - visibleWidth(prefixText) - visibleWidth(changeMarker) - visibleWidth(commentMarker));
       const shortenedPath = shortenNavigatorPath(file.path, pathWidth);
-      const pathText = active
+      const pathText = active || (!relatedFilterActive && related)
         ? this.theme.fg("accent", shortenedPath)
-        : related
-          ? this.theme.fg("accent", shortenedPath)
-          : this.theme.fg("text", shortenedPath);
+        : this.theme.fg("text", shortenedPath);
       lines.push(`${prefixText}${pathText}${changeMarker}${commentMarker}`);
     }
 
