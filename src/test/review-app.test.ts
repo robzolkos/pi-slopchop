@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import type { ReviewFile } from "../types.js";
-import { buildDisplayRows, buildEditorLaunchCommand, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, parseMouseWheelInput } from "../ui/review-app.js";
+import { buildDisplayRows, buildEditorLaunchCommand, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, shouldStackPanes } from "../ui/review-app.js";
 
 function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
   return {
@@ -57,7 +57,7 @@ describe("getHalfPageStep", () => {
   });
 });
 
-describe("getPaneLayout", () => {
+describe("pane layout", () => {
   it("gives the diff pane the comments width when comments are hidden", () => {
     const shown = getPaneLayout(100, false);
     const hidden = getPaneLayout(100, true);
@@ -65,6 +65,25 @@ describe("getPaneLayout", () => {
     expect(hidden.commentsWidth).toBe(0);
     expect(hidden.navigatorWidth).toBe(shown.navigatorWidth);
     expect(hidden.diffWidth).toBeGreaterThan(shown.diffWidth);
+  });
+
+  it("stacks panes below the desktop width breakpoint", () => {
+    expect(shouldStackPanes(99)).toBe(true);
+    expect(shouldStackPanes(100)).toBe(false);
+  });
+
+  it("allocates stacked pane heights with more room for the diff", () => {
+    expect(getStackedPaneLayout(11, false)).toEqual({
+      navigatorHeight: 3,
+      diffHeight: 5,
+      commentsHeight: 3,
+    });
+
+    expect(getStackedPaneLayout(9, true)).toEqual({
+      navigatorHeight: 3,
+      diffHeight: 6,
+      commentsHeight: 0,
+    });
   });
 });
 

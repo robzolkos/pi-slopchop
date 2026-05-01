@@ -70,19 +70,22 @@ interface ReviewAppOptions {
   notify: ExtensionContext["ui"]["notify"];
 }
 
+interface MousePaneBounds {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
 interface MousePaneLayout {
-  bodyTop: number;
-  bodyBottom: number;
-  navigatorLeft: number;
-  navigatorRight: number;
-  diffLeft: number;
-  diffRight: number;
-  commentsLeft: number | null;
-  commentsRight: number | null;
+  navigator: MousePaneBounds;
+  diff: MousePaneBounds;
+  comments: MousePaneBounds | null;
 }
 
 const SEARCHABLE_SCOPES: ReviewScope[] = ["git-diff", "last-commit", "all-files"];
 const DEFAULT_CONTEXT_LINES = 3;
+const STACKED_LAYOUT_MAX_WIDTH = 99;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -133,6 +136,10 @@ export function getHalfPageStep(visibleRows: number): number {
   return Math.max(1, Math.floor(visibleRows / 2));
 }
 
+export function shouldStackPanes(frameInnerWidth: number): boolean {
+  return frameInnerWidth <= STACKED_LAYOUT_MAX_WIDTH;
+}
+
 export function getPaneLayout(frameInnerWidth: number, commentsHidden: boolean): { navigatorWidth: number; diffWidth: number; commentsWidth: number } {
   const navigatorWidth = Math.max(24, Math.min(36, Math.floor(frameInnerWidth * 0.26)));
   if (commentsHidden) {
@@ -148,6 +155,31 @@ export function getPaneLayout(frameInnerWidth: number, commentsHidden: boolean):
     navigatorWidth,
     commentsWidth,
     diffWidth: Math.max(24, frameInnerWidth - navigatorWidth - commentsWidth - 2),
+  };
+}
+
+export function getStackedPaneLayout(bodyHeight: number, commentsHidden: boolean): { navigatorHeight: number; diffHeight: number; commentsHeight: number } {
+  const safeBodyHeight = Math.max(commentsHidden ? 6 : 9, Math.floor(bodyHeight));
+  const minimums = commentsHidden ? [3, 3] : [3, 3, 3];
+  const weights = commentsHidden ? [1, 2] : [1, 2, 1];
+  const heights = [...minimums];
+  let remaining = safeBodyHeight - heights.reduce((sum, height) => sum + height, 0);
+
+  while (remaining > 0) {
+    let selectedIndex = 0;
+    for (let index = 1; index < weights.length; index += 1) {
+      if (heights[index]! / weights[index]! < heights[selectedIndex]! / weights[selectedIndex]!) {
+        selectedIndex = index;
+      }
+    }
+    heights[selectedIndex]! += 1;
+    remaining -= 1;
+  }
+
+  return {
+    navigatorHeight: heights[0]!,
+    diffHeight: heights[1]!,
+    commentsHeight: commentsHidden ? 0 : heights[2]!,
   };
 }
 
@@ -559,10 +591,15 @@ class ReviewApp {
 
     const zeroCol = col - 1;
     const zeroRow = row - 1;
-    if (zeroRow < layout.bodyTop || zeroRow > layout.bodyBottom) return null;
-    if (zeroCol >= layout.navigatorLeft && zeroCol <= layout.navigatorRight) return "navigator";
-    if (zeroCol >= layout.diffLeft && zeroCol <= layout.diffRight) return "diff";
-    if (layout.commentsLeft != null && layout.commentsRight != null && zeroCol >= layout.commentsLeft && zeroCol <= layout.commentsRight) return "comments";
+    const contains = (bounds: MousePaneBounds | null): boolean => bounds != null
+      && zeroRow >= bounds.top
+      && zeroRow <= bounds.bottom
+      && zeroCol >= bounds.left
+      && zeroCol <= bounds.right;
+
+    if (contains(layout.navigator)) return "navigator";
+    if (contains(layout.diff)) return "diff";
+    if (contains(layout.comments)) return "comments";
     return null;
   }
 
@@ -1604,41 +1641,30 @@ class ReviewApp {
   }
 
   render(width: number): string[] {
-    this.lastWidth = Math.max(80, width);
+    this.lastWidth = Math.max(40, width);
     const terminalRows = this.tui?.terminal?.rows ?? 28;
     const totalHeight = Math.max(20, terminalRows - 4);
     const frameColor = "accent" as const;
-    const frameInnerWidth = Math.max(40, this.lastWidth - 2 - MODAL_INNER_PADDING_X * 2);
+    const frameInnerWidth = Math.max(20, this.lastWidth - 2 - MODAL_INNER_PADDING_X * 2);
     const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
-    const bodyHeight = Math.max(6, frameInnerHeight - 5);
-    const { navigatorWidth, diffWidth, commentsWidth } = getPaneLayout(frameInnerWidth, this.commentsHidden);
+    const stackPanes = shouldStackPanes(frameInnerWidth);
+    const bodyHeight = Math.max(stackPanes && !this.commentsHidden ? 9 : 6, frameInnerHeight - 5);
     const terminalCols = this.tui?.terminal?.columns ?? this.lastWidth;
     const overlayOriginCol = Math.max(0, Math.floor((terminalCols - this.lastWidth) / 2));
     const overlayOriginRow = Math.max(0, Math.floor((terminalRows - totalHeight) / 2));
     const bodyTop = overlayOriginRow + 1 + MODAL_INNER_PADDING_Y + 1;
     const contentLeft = overlayOriginCol + 1 + MODAL_INNER_PADDING_X;
-    const diffLeft = contentLeft + navigatorWidth + 1;
-    const commentsLeft = this.commentsHidden ? null : diffLeft + diffWidth + 1;
-    this.mousePaneLayout = {
-      bodyTop,
-      bodyBottom: bodyTop + bodyHeight - 1,
-      navigatorLeft: contentLeft,
-      navigatorRight: contentLeft + navigatorWidth - 1,
-      diffLeft,
-      diffRight: diffLeft + diffWidth - 1,
-      commentsLeft,
-      commentsRight: commentsLeft == null ? null : commentsLeft + commentsWidth - 1,
-    };
 
+    const layoutStatus = stackPanes ? "stacked layout • " : "";
     const promptStatus = this.shortcutMode
-      ? "Shortcut mode • choose from the right panel • Esc cancel"
+      ? "Shortcut mode • choose from the comments panel • Esc cancel"
       : this.helpMode
         ? "Help open • ? toggle • Esc close"
         : this.message ?? (this.searchMode
           ? `Search: ${this.searchBuffer}`
           : this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : `Tab focus • / search • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open • s submit • Esc cancel`);
+            : `${layoutStatus}Tab focus • / search • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open • s submit • Esc cancel`);
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
@@ -1651,15 +1677,43 @@ class ReviewApp {
       truncateToWidth(scopeTabs, frameInnerWidth, "", false),
     ];
 
-    const navigator = this.renderNavigator(navigatorWidth, bodyHeight);
-    const diff = this.renderDiff(diffWidth, bodyHeight);
-    const comments = this.commentsHidden ? [] : this.renderComments(commentsWidth, bodyHeight);
     const body: string[] = [];
 
-    for (let i = 0; i < bodyHeight; i += 1) {
-      body.push(this.commentsHidden
-        ? `${navigator[i] ?? ""} ${diff[i] ?? ""}`
-        : `${navigator[i] ?? ""} ${diff[i] ?? ""} ${comments[i] ?? ""}`);
+    if (stackPanes) {
+      const { navigatorHeight, diffHeight, commentsHeight } = getStackedPaneLayout(bodyHeight, this.commentsHidden);
+      const paneLeft = contentLeft;
+      const paneRight = contentLeft + frameInnerWidth - 1;
+      const navigatorTop = bodyTop;
+      const diffTop = navigatorTop + navigatorHeight;
+      const commentsTop = diffTop + diffHeight;
+      this.mousePaneLayout = {
+        navigator: { top: navigatorTop, bottom: navigatorTop + navigatorHeight - 1, left: paneLeft, right: paneRight },
+        diff: { top: diffTop, bottom: diffTop + diffHeight - 1, left: paneLeft, right: paneRight },
+        comments: this.commentsHidden ? null : { top: commentsTop, bottom: commentsTop + commentsHeight - 1, left: paneLeft, right: paneRight },
+      };
+
+      body.push(...this.renderNavigator(frameInnerWidth, navigatorHeight));
+      body.push(...this.renderDiff(frameInnerWidth, diffHeight));
+      if (!this.commentsHidden) body.push(...this.renderComments(frameInnerWidth, commentsHeight));
+    } else {
+      const { navigatorWidth, diffWidth, commentsWidth } = getPaneLayout(frameInnerWidth, this.commentsHidden);
+      const diffLeft = contentLeft + navigatorWidth + 1;
+      const commentsLeft = this.commentsHidden ? null : diffLeft + diffWidth + 1;
+      this.mousePaneLayout = {
+        navigator: { top: bodyTop, bottom: bodyTop + bodyHeight - 1, left: contentLeft, right: contentLeft + navigatorWidth - 1 },
+        diff: { top: bodyTop, bottom: bodyTop + bodyHeight - 1, left: diffLeft, right: diffLeft + diffWidth - 1 },
+        comments: commentsLeft == null ? null : { top: bodyTop, bottom: bodyTop + bodyHeight - 1, left: commentsLeft, right: commentsLeft + commentsWidth - 1 },
+      };
+
+      const navigator = this.renderNavigator(navigatorWidth, bodyHeight);
+      const diff = this.renderDiff(diffWidth, bodyHeight);
+      const comments = this.commentsHidden ? [] : this.renderComments(commentsWidth, bodyHeight);
+
+      for (let i = 0; i < bodyHeight; i += 1) {
+        body.push(this.commentsHidden
+          ? `${navigator[i] ?? ""} ${diff[i] ?? ""}`
+          : `${navigator[i] ?? ""} ${diff[i] ?? ""} ${comments[i] ?? ""}`);
+      }
     }
 
     const footer = [
@@ -1683,8 +1737,8 @@ export async function runReviewApp(
         anchor: "center",
         width: "100%",
         maxHeight: "100%",
-        minWidth: 90,
-        margin: 2,
+        minWidth: 40,
+        margin: 1,
       },
     },
   );
