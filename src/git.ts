@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { extname, join, posix } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ChangeStatus, ReviewFile, ReviewFileComparison, ReviewFileContents, ReviewScope } from "./types.js";
 
 export interface ChangedPath {

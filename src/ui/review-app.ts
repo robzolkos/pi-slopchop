@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { adjustStructuredDiffContext, buildStructuredDiff, type StructuredDiff, type StructuredDiffVisibleItem } from "../diff.js";
 import {
   clampSelectedLineTarget,

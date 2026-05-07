@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getReviewWindowData, loadReviewFileContents } from "./git.js";
 import { composeReviewPrompt } from "./prompt.js";
 import { loadCommentShortcuts } from "./shortcuts.js";

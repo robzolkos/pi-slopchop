@@ -8,7 +8,7 @@ function resolveThemeModuleUrl(): string {
   let current = start;
 
   for (let i = 0; i < 8; i += 1) {
-    const candidate = path.join(current, "node_modules", "@mariozechner", "pi-coding-agent", "dist", "modes", "interactive", "theme", "theme.js");
+    const candidate = path.join(current, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "modes", "interactive", "theme", "theme.js");
     if (existsSync(candidate)) return pathToFileURL(candidate).href;
 
     const parent = path.dirname(current);

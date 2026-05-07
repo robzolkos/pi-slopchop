@@ -1,6 +1,6 @@
 {
   "name": "pi-slopchop",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "Terminal-native code review and annotation workflow for the Pi coding agent.",
   "author": "Rob Zolkos <rob@zolkos.com>",
@@ -50,8 +50,8 @@
     "diff": "^8.0.2"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
