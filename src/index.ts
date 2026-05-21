@@ -56,7 +56,7 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerShortcut("ctrl+alt+s", {
+  pi.registerShortcut("alt+s", {
     description: "Open /slopchop",
     handler: async (ctx) => {
       await openReview(ctx);

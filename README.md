@@ -52,7 +52,7 @@ Inside a git repo in Pi:
 Or use the global shortcut:
 
 ```text
-ctrl+alt+s
+alt+s
 ```
 
 ### Basic flow
