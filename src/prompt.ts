@@ -14,12 +14,16 @@ function formatLocation(comment: DiffReviewComment, file: ReviewFile | undefined
     return filePath;
   }
 
+  const lineRange = comment.endLine != null && comment.endLine !== comment.startLine
+    ? `${comment.startLine}-${comment.endLine}`
+    : `${comment.startLine}`;
+
   if (comment.scope === "all-files") {
-    return `${filePath}:${comment.startLine}`;
+    return `${filePath}:${lineRange}`;
   }
 
   const suffix = comment.side === "deleted" ? "deleted" : "added";
-  return `${filePath}:${comment.startLine} (${suffix})`;
+  return `${filePath}:${lineRange} (${suffix})`;
 }
 
 function scopeOrder(scope: ReviewScope): number {
