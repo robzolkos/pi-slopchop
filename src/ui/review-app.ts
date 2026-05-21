@@ -1757,7 +1757,8 @@ class ReviewApp {
       this.theme.fg("muted", "Enter keep reviewing"),
       this.theme.fg("muted", "Esc keep reviewing • Ctrl+C keep reviewing"),
     ];
-    return renderBox("Discard review", 50, 7, this.theme, lines, true);
+    return renderBox("Discard review", 50, 7, this.theme, lines, true)
+      .map((line) => this.theme.bg("toolPendingBg", line));
   }
 
   private renderComments(width: number, height: number): string[] {
