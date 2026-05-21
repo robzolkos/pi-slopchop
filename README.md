@@ -21,7 +21,7 @@ It supports three review scopes:
 Inside the review UI you can:
 
 - move through files and hunks quickly
-- annotate **added** and **deleted** lines
+- annotate **added** and **deleted** lines, including multiline ranges on one diff side
 - leave **file-level** annotations
 - leave a **whole-change** note
 - mark feedback as either:
@@ -81,9 +81,9 @@ alt+s
 
 ### Fastest path
 
-If you want speed, use slash shortcuts on a selected diff line:
+If you want speed, use template shortcuts on a selected diff line:
 
-- press `/`
+- press `t`
 - press a shortcut key from the right panel
 
 That creates a templated annotation instantly. If you want to refine it afterwards, press `e` on that same line.
@@ -96,7 +96,7 @@ That creates a templated annotation instantly. If you want to refine it afterwar
 
 #### Line comments
 
-Use these for precise feedback tied to a specific added or deleted line.
+Use these for precise feedback tied to a specific added or deleted line. Hold `Shift+↑↓` in the diff to extend the selection into a multiline range on the same diff side.
 
 Examples:
 
@@ -162,19 +162,21 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 
 - `1 / 2 / 3` — switch scope
 - mouse wheel — scroll the pane under the cursor
-- `Tab` — cycle focus: navigator → diff → comments
-- `/` — search files, or open slash shortcuts in diff focus
+- `Tab` / `Shift+Tab` — cycle focus forward / backward
+- `/` — search files in the navigator
 - `?` — toggle help in the right sidebar
 - `w` — toggle wrapping
 - `u` — toggle unchanged context in diff scopes
 - `h` — hide/show the comments pane
 - `s` — insert the generated prompt into the editor
-- `Esc` — cancel the review
+- `Esc` — request review exit; confirms before discarding draft feedback
+- `Ctrl+C` — request review exit with the same confirmation flow
 
 #### Navigator
 
 - `↑↓` or `j/k` — move between files
 - `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
+- `gg / G` — jump to the top / bottom
 - `r` — toggle related-files filter in `all files` scope
 - file rows show change counts as `+added -deleted`
 - `Enter` — move focus to diff
@@ -182,16 +184,20 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 #### Diff
 
 - `↑↓` or `j/k` — move between selectable added/deleted lines
+- `Shift+↑↓` — extend the selection into a multiline range on the current side
 - `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
+- `gg / G` — jump to the top / bottom
 - `n / p` — next / previous hunk
-- `o` — open the selected line in `$EDITOR`, then return to `/slopchop` when the editor exits
+- `o` — open the selected source location in `$EDITOR`, then return to `/slopchop` when the editor exits
 - `f` — line comment, default `FIX`
 - `d` or `c` — line comment, default `DISCUSS`
 - `e` — edit the existing line comment on the selected line
 - `x` — delete the existing line comment on the selected line
 - `l` — file comment
 - `a` — whole-change note
-- `/` — open slash shortcut mode for the selected line
+- `t` — open template shortcut mode for the selected line
+
+Opening a source location in `$EDITOR` returns you to `/slopchop` when the editor exits and keeps your draft feedback available for submission.
 
 Line comment markers in the diff gutter:
 
@@ -202,6 +208,7 @@ Line comment markers in the diff gutter:
 
 - `↑↓` or `j/k` — move through saved comments
 - `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
+- `gg / G` — jump to the top / bottom
 - `e` or `Enter` — edit selected comment
 - `d` — delete selected comment
 
@@ -212,11 +219,11 @@ Line comment markers in the diff gutter:
 - `Shift+Enter` — newline
 - `Esc` — cancel editor
 
-### Slash shortcut mode
+### Template shortcut mode
 
-Slash shortcut mode is for very fast line comments.
+Template shortcut mode is for very fast line comments.
 
-When you press `/` on a selected diff line:
+When you press `t` on a selected diff line:
 
 - the right sidebar switches to a shortcut panel
 - shortcuts are grouped under `DISCUSS` and `FIX`
@@ -269,7 +276,7 @@ Example:
 Each shortcut has:
 
 - `id` — stable identifier
-- `key` — one-character trigger after `/`
+- `key` — one-character trigger after opening template shortcut mode with `t`
 - `label` — short label shown in the UI
 - `intent` — `fix` or `discuss`
 - `side` — `added`, `deleted`, or `both`

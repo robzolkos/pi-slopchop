@@ -1647,10 +1647,11 @@ class ReviewApp {
     lines.push(this.theme.fg("muted", "? toggle help • Esc close"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
-    lines.push(this.theme.fg("muted", "global: 1/2/3 scope • Tab/Shift+Tab focus • / search • t templates • h comments • s submit"));
-    lines.push(this.theme.fg("muted", "global: Esc cancel review • Ctrl+C cancel review alias • w wrap • u unchanged • ? help"));
-    lines.push(this.theme.fg("muted", "navigator/comments: ↑↓ or j/k move • Ctrl+d/u half-page • gg/G top/bottom • Enter edit/open"));
-    lines.push(this.theme.fg("muted", "diff: gg/G top/bottom • f fix • d/c discuss • e edit line comment • x delete • o open in $EDITOR • l file • a all • n/p hunks"));
+    lines.push(this.theme.fg("muted", "global: 1/2/3 scope • Tab/Shift+Tab focus • / search • ? help • w wrap • u unchanged • h comments • s submit"));
+    lines.push(this.theme.fg("muted", "global: Esc exit review • Ctrl+C exit alias • drafts stay intact until you confirm discard"));
+    lines.push(this.theme.fg("muted", "navigator: ↑↓/j/k files • Ctrl+d/u half-page • gg/G top/bottom • r related • Enter diff"));
+    lines.push(this.theme.fg("muted", "diff: ↑↓/j/k lines • Shift+↑↓ range • Ctrl+d/u half-page • gg/G top/bottom • t templates • f fix • d/c discuss • e edit • x delete • o $EDITOR • l file • a all • n/p hunks"));
+    lines.push(this.theme.fg("muted", "comments: ↑↓/j/k comments • Ctrl+d/u half-page • gg/G top/bottom • e/Enter edit • d delete"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Editor"));
     lines.push(this.theme.fg("muted", "Tab toggle • Enter save • Shift+Enter newline • Esc cancel"));
@@ -1768,7 +1769,7 @@ class ReviewApp {
 
     if (items.length === 0) {
       lines.push(this.theme.fg("dim", "No comments yet."));
-      lines.push(this.theme.fg("dim", "Use f/d/c for line, l for file, or a for all."));
+      lines.push(this.theme.fg("dim", "Use f/d/c for a line or range, l for file, or a for all."));
       return renderBox("Comments", width, height, this.theme, lines, this.state.focus === "comments");
     }
 
@@ -1833,7 +1834,7 @@ class ReviewApp {
           ? `Search: ${this.searchBuffer}`
           : this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : `${layoutStatus}Tab focus • / search • t templates • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit • Esc cancel • Ctrl+C cancel`);
+            : `${layoutStatus}Tab focus • / search • t templates • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit • Esc exit • Ctrl+C exit`);
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
@@ -1887,7 +1888,7 @@ class ReviewApp {
 
     const footer = [
       truncateToWidth(this.theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, gg/G top-bottom, r related filter • diff: ↑↓ lines, Ctrl+d/u half-page, gg/G top-bottom, t templates, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, gg/G top-bottom, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
+      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, gg/G top-bottom, r related filter • diff: ↑↓ lines, Shift+↑↓ range, Ctrl+d/u half-page, gg/G top-bottom, t templates, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, gg/G top-bottom, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
     ];
 
     return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
