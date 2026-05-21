@@ -10,9 +10,11 @@ import {
   cycleFocusBackward,
   deleteComment,
   ensureActiveFile,
+  extendSelectedLineTarget,
   getCommentsForFileScope,
   getFileComment,
   getLineComment,
+  getLineTargetRange,
   getScopedFiles,
   getSelectedLineTarget,
   hasDraftContent,
@@ -54,7 +56,7 @@ interface LoadedEntryLoading {
 type LoadedEntry = LoadedEntryReady | LoadedEntryError | LoadedEntryLoading;
 
 type EditTarget =
-  | { kind: "line"; fileId: string; scope: ReviewScope; side: ReviewLineTarget["side"]; line: number; initialBody: string; intent: CommentIntent }
+  | { kind: "line"; fileId: string; scope: ReviewScope; side: ReviewLineTarget["side"]; startLine: number; endLine: number; initialBody: string; intent: CommentIntent }
   | { kind: "file"; fileId: string; scope: ReviewScope; initialBody: string; intent: CommentIntent }
   | { kind: "all"; initialBody: string; intent: CommentIntent };
 
@@ -307,10 +309,14 @@ function formatLineSideLabel(side: ReviewLineTarget["side"]): string {
   return side === "deleted" ? "Deleted" : "Added";
 }
 
+function formatLineRangeLabel(startLine: number, endLine: number): string {
+  return startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
+}
+
 function getPanelItemLabel(theme: Theme, item: CommentPanelItem): string {
   if (item.kind === "all") return `${getIntentBadge(theme, item.intent)} All note`;
   if (item.comment.side === "file") return `${getIntentBadge(theme, item.comment.intent)} File comment`;
-  return `${getIntentBadge(theme, item.comment.intent)} ${formatLineSideLabel(item.comment.side)} line ${item.comment.startLine}`;
+  return `${getIntentBadge(theme, item.comment.intent)} ${formatLineSideLabel(item.comment.side)} line ${formatLineRangeLabel(item.comment.startLine ?? 0, item.comment.endLine ?? item.comment.startLine ?? 0)}`;
 }
 
 export function getDraftCommentCount(state: ReviewState): number {
@@ -799,7 +805,16 @@ class ReviewApp {
     } else if (target.kind === "file") {
       this.state = upsertFileComment(this.state, target.fileId, target.scope, value, target.intent);
     } else {
-      this.state = upsertLineComment(this.state, target.fileId, target.scope, target.side, target.line, value, target.intent);
+      this.state = upsertLineComment(
+        this.state,
+        target.fileId,
+        target.scope,
+        target.side,
+        target.startLine,
+        value,
+        target.intent,
+        target.endLine,
+      );
     }
 
     this.editTarget = null;
@@ -822,15 +837,17 @@ class ReviewApp {
       this.requestRender();
       return;
     }
+    const range = getLineTargetRange(target);
     const existing = getLineComment(this.state, file.id, this.state.activeScope, target.side, target.line);
     this.openEditor({
       kind: "line",
       fileId: file.id,
       scope: this.state.activeScope,
       side: target.side,
-      line: target.line,
+      startLine: existing?.startLine ?? range.startLine,
+      endLine: existing?.endLine ?? range.endLine,
       initialBody: existing?.body ?? "",
-      intent: defaultIntent,
+      intent: existing?.intent ?? defaultIntent,
     });
   }
 
@@ -843,13 +860,15 @@ class ReviewApp {
       this.requestRender();
       return;
     }
+    const range = getLineTargetRange(target);
     const existing = getLineComment(this.state, file.id, this.state.activeScope, target.side, target.line);
     this.openEditor({
       kind: "line",
       fileId: file.id,
       scope: this.state.activeScope,
       side: target.side,
-      line: target.line,
+      startLine: existing?.startLine ?? range.startLine,
+      endLine: existing?.endLine ?? range.endLine,
       initialBody: existing?.body ?? "",
       intent: existing?.intent ?? "fix",
     });
@@ -925,7 +944,10 @@ class ReviewApp {
     }
     this.state = setSelectedLineTarget(this.state, item.comment.fileId, item.comment.scope, {
       side: item.comment.side,
-      line: item.comment.startLine ?? 1,
+      line: item.comment.endLine ?? item.comment.startLine ?? 1,
+      endLine: item.comment.startLine != null && item.comment.endLine != null && item.comment.endLine !== item.comment.startLine
+        ? item.comment.startLine
+        : undefined,
     });
     this.editLineComment();
   }
@@ -1178,6 +1200,14 @@ class ReviewApp {
     this.requestRender();
   }
 
+  private extendDiffSelection(delta: number): void {
+    const file = this.activeFile();
+    if (file == null) return;
+    const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
+    this.state = extendSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, delta);
+    this.requestRender();
+  }
+
   private moveCommentSelection(delta: number): void {
     const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
     this.state = moveSelectedCommentIndex(this.state, items.length, delta);
@@ -1257,7 +1287,8 @@ class ReviewApp {
       return;
     }
 
-    this.state = upsertLineComment(this.state, file.id, this.state.activeScope, target.side, target.line, shortcut.text, shortcut.intent);
+    const range = getLineTargetRange(target);
+    this.state = upsertLineComment(this.state, file.id, this.state.activeScope, target.side, range.startLine, shortcut.text, shortcut.intent, range.endLine);
     this.shortcutMode = false;
     this.requestRender();
   }
@@ -1399,6 +1430,14 @@ class ReviewApp {
       }
       const file = this.activeFile();
       if (file != null) {
+        if (matchesKey(data, Key.shift("down"))) {
+          this.extendDiffSelection(1);
+          return;
+        }
+        if (matchesKey(data, Key.shift("up"))) {
+          this.extendDiffSelection(-1);
+          return;
+        }
         if (matchesKey(data, Key.down) || data === "j") {
           this.moveDiffSelection(1);
           return;
@@ -1549,10 +1588,18 @@ class ReviewApp {
     let selectedIndex = 0;
 
     for (const row of displayRows) {
-      const isSelected = row.commentLineNumber != null
+      const selectedRange = selectedTarget == null ? null : getLineTargetRange(selectedTarget);
+      const selectedSide = selectedTarget?.side ?? null;
+      const isCurrentTarget = row.commentLineNumber != null
         && row.commentSide != null
         && selectedTarget?.line === row.commentLineNumber
-        && selectedTarget.side === row.commentSide;
+        && selectedSide === row.commentSide;
+      const isSelected = row.commentLineNumber != null
+        && row.commentSide != null
+        && selectedRange != null
+        && selectedSide === row.commentSide
+        && selectedRange.startLine <= row.commentLineNumber
+        && row.commentLineNumber <= selectedRange.endLine;
       const lineComment = row.commentLineNumber != null && row.commentSide != null
         ? getLineComment(this.state, file.id, this.state.activeScope, row.commentSide, row.commentLineNumber)
         : undefined;
@@ -1580,7 +1627,7 @@ class ReviewApp {
       }
 
       const renderedLines = this.getCachedRenderedDiffLines(width, this.state.wrapLines, row.kind, tone, contentText, isSelected);
-      if (isSelected) selectedIndex = rendered.length;
+      if (isCurrentTarget) selectedIndex = rendered.length;
       rendered.push(...renderedLines);
     }
 
@@ -1692,7 +1739,7 @@ class ReviewApp {
         ? "All note"
         : this.editTarget.kind === "file"
           ? "File comment"
-          : `${formatLineSideLabel(this.editTarget.side)} line ${this.editTarget.line}`));
+          : `${formatLineSideLabel(this.editTarget.side)} line ${formatLineRangeLabel(this.editTarget.startLine, this.editTarget.endLine)}`));
       lines.push(`${getIntentBadge(this.theme, this.editTarget.intent)} ${this.theme.fg("dim", "Tab toggle")}`);
       lines.push(this.theme.fg("dim", "Enter save • Shift+Enter newline"));
       lines.push(this.theme.fg("dim", "Esc cancel"));
@@ -1715,7 +1762,7 @@ class ReviewApp {
       lines.push(this.theme.fg("muted", `file: ${fileComment ? "commented" : "none"}`));
       lines.push(this.theme.fg("muted", selectedTarget == null
         ? "line —: none"
-        : `${formatLineSideLabel(selectedTarget.side).toLowerCase()} ${selectedTarget.line}: ${lineComment ? "commented" : "none"}`));
+        : `${formatLineSideLabel(selectedTarget.side).toLowerCase()} ${formatLineRangeLabel(getLineTargetRange(selectedTarget).startLine, getLineTargetRange(selectedTarget).endLine)}: ${lineComment ? "commented" : "none"}`));
       lines.push("");
     }
 
@@ -1742,7 +1789,7 @@ class ReviewApp {
         lines.push(`   ${line}`);
       }
       if (item.kind === "comment" && item.comment.side !== "file") {
-        lines.push(this.theme.fg("dim", `   ${getScopeDisplayPath(file, this.state.activeScope)}:${item.comment.startLine} (${item.comment.side})`));
+        lines.push(this.theme.fg("dim", `   ${getScopeDisplayPath(file, this.state.activeScope)}:${formatLineRangeLabel(item.comment.startLine ?? 0, item.comment.endLine ?? item.comment.startLine ?? 0)} (${item.comment.side})`));
       }
       lines.push("");
     }
