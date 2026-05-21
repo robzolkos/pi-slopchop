@@ -8,6 +8,8 @@ import {
   getLineComment,
   getScopedFiles,
   moveActiveFile,
+  moveSelectedCommentIndex,
+  moveSelectedLineTarget,
   setScope,
   setSearchQuery,
   upsertFileComment,
@@ -124,10 +126,37 @@ describe("review state", () => {
     expect(state.activeFileId).toBe("src/b.ts");
   });
 
+  it("clamps large file jumps to the list boundaries", () => {
+    const files = [makeFile("src/a.ts"), makeFile("src/b.ts"), makeFile("src/c.ts")];
+    let state = createInitialReviewState(files);
+    state = moveActiveFile(state, files, 99);
+    expect(state.activeFileId).toBe("src/c.ts");
+    state = moveActiveFile(state, files, -99);
+    expect(state.activeFileId).toBe("src/a.ts");
+  });
+
   it("clamps selected line target to a visible target", () => {
     const files = [makeFile("src/a.ts")];
     let state = createInitialReviewState(files);
     state = clampSelectedLineTarget(state, "src/a.ts", "git-diff", [{ side: "deleted", line: 4 }, { side: "added", line: 8 }]);
     expect(state.selectedLineTargetByScopeFile["git-diff::src/a.ts"]).toEqual({ side: "deleted", line: 4 });
+  });
+
+  it("clamps large diff jumps to the visible boundaries", () => {
+    const files = [makeFile("src/a.ts")];
+    const visibleTargets = [{ side: "deleted" as const, line: 4 }, { side: "added" as const, line: 8 }, { side: "added" as const, line: 12 }];
+    let state = createInitialReviewState(files);
+    state = moveSelectedLineTarget(state, "src/a.ts", "git-diff", visibleTargets, 99);
+    expect(state.selectedLineTargetByScopeFile["git-diff::src/a.ts"]).toEqual({ side: "added", line: 12 });
+    state = moveSelectedLineTarget(state, "src/a.ts", "git-diff", visibleTargets, -99);
+    expect(state.selectedLineTargetByScopeFile["git-diff::src/a.ts"]).toEqual({ side: "deleted", line: 4 });
+  });
+
+  it("clamps large comment jumps to the list boundaries", () => {
+    let state = createInitialReviewState([makeFile("src/a.ts")]);
+    state = moveSelectedCommentIndex(state, 3, 99);
+    expect(state.selectedCommentIndex).toBe(2);
+    state = moveSelectedCommentIndex(state, 3, -99);
+    expect(state.selectedCommentIndex).toBe(0);
   });
 });

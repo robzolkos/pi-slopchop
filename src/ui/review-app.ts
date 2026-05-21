@@ -517,6 +517,7 @@ class ReviewApp {
   private mousePaneLayout: MousePaneLayout | null = null;
   private mouseTrackingEnabled = false;
   private lastWidth = 120;
+  private pendingVimSequence: "g" | null = null;
   private readonly previousHardwareCursor: boolean;
   private readonly syntaxLineCache = new Map<string, string>();
   private readonly renderedDiffLineCache = new Map<string, string[]>();
@@ -663,6 +664,12 @@ class ReviewApp {
   private getEntry(fileId: string | null, scope: ReviewScope): LoadedEntry | undefined {
     if (fileId == null) return undefined;
     return this.cache.get(this.cacheKey(fileId, scope));
+  }
+
+  private invalidateEntry(fileId: string, scope: ReviewScope): void {
+    this.cache.delete(this.cacheKey(fileId, scope));
+    this.syntaxLineCache.clear();
+    this.renderedDiffLineCache.clear();
   }
 
   private getDisplayDiff(fileId: string | null, scope: ReviewScope): StructuredDiff | null {
@@ -973,6 +980,8 @@ class ReviewApp {
       this.setMessage(`Could not open $EDITOR: ${message}`);
     } finally {
       this.externalEditorOpen = false;
+      this.invalidateEntry(file.id, this.state.activeScope);
+      void this.ensureActiveEntry();
       if (typeof this.tui.start === "function") this.tui.start();
       this.setMouseTracking(true);
       if (typeof this.tui.requestRender === "function") this.tui.requestRender(true);
@@ -1175,6 +1184,35 @@ class ReviewApp {
     this.requestRender();
   }
 
+  private jumpToBoundary(direction: "start" | "end"): void {
+    if (this.state.focus === "navigator") {
+      const files = this.getNavigatorFiles();
+      if (files.length === 0) return;
+      const file = direction === "start" ? files[0]! : files[files.length - 1]!;
+      this.state = setActiveFileId(this.state, this.options.files, file.id);
+      void this.ensureActiveEntry();
+      this.requestRender();
+      return;
+    }
+
+    if (this.state.focus === "diff") {
+      const file = this.activeFile();
+      if (file == null) return;
+      const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
+      if (visibleTargets.length === 0) return;
+      const target = direction === "start" ? visibleTargets[0]! : visibleTargets[visibleTargets.length - 1]!;
+      this.state = setSelectedLineTarget(this.state, file.id, this.state.activeScope, target);
+      this.requestRender();
+      return;
+    }
+
+    const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
+    if (items.length === 0) return;
+    const delta = direction === "start" ? -Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+    this.state = moveSelectedCommentIndex(this.state, items.length, delta);
+    this.requestRender();
+  }
+
   private handleMouseWheel(data: string): boolean {
     const event = parseMouseWheelInput(data);
     if (event == null) return false;
@@ -1297,6 +1335,14 @@ class ReviewApp {
       return;
     }
 
+    if (this.pendingVimSequence === "g") {
+      this.pendingVimSequence = null;
+      if (data === "g") {
+        this.jumpToBoundary("start");
+        return;
+      }
+    }
+
     if (data === "?") { this.toggleHelpMode(); return; }
     if (this.helpMode && matchesKey(data, Key.escape)) { this.helpMode = false; this.requestRender(); return; }
 
@@ -1305,6 +1351,8 @@ class ReviewApp {
     if (data === "3") { this.setScope("all-files"); return; }
     if (matchesKey(data, Key.shift("tab"))) { this.cycleVisibleFocus(true); return; }
     if (matchesKey(data, Key.tab)) { this.cycleVisibleFocus(); return; }
+    if (data === "g") { this.pendingVimSequence = "g"; return; }
+    if (data === "G") { this.jumpToBoundary("end"); return; }
     if (data === "/") { this.openSearch(); return; }
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) { this.requestCancel(); return; }
     if (data === "h") { this.toggleCommentsPane(); return; }
@@ -1554,8 +1602,8 @@ class ReviewApp {
     lines.push(this.theme.fg("warning", "Keys"));
     lines.push(this.theme.fg("muted", "global: 1/2/3 scope • Tab/Shift+Tab focus • / search • t templates • h comments • s submit"));
     lines.push(this.theme.fg("muted", "global: Esc cancel review • Ctrl+C cancel review alias • w wrap • u unchanged • ? help"));
-    lines.push(this.theme.fg("muted", "navigator/comments: ↑↓ or j/k move • Ctrl+d/u half-page • Enter edit/open"));
-    lines.push(this.theme.fg("muted", "diff: f fix • d/c discuss • e edit line comment • x delete • o open in $EDITOR • l file • a all • n/p hunks"));
+    lines.push(this.theme.fg("muted", "navigator/comments: ↑↓ or j/k move • Ctrl+d/u half-page • gg/G top/bottom • Enter edit/open"));
+    lines.push(this.theme.fg("muted", "diff: gg/G top/bottom • f fix • d/c discuss • e edit line comment • x delete • o open in $EDITOR • l file • a all • n/p hunks"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Editor"));
     lines.push(this.theme.fg("muted", "Tab toggle • Enter save • Shift+Enter newline • Esc cancel"));
@@ -1792,7 +1840,7 @@ class ReviewApp {
 
     const footer = [
       truncateToWidth(this.theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, r related filter • diff: ↑↓ lines, Ctrl+d/u half-page, t templates, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
+      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, gg/G top-bottom, r related filter • diff: ↑↓ lines, Ctrl+d/u half-page, gg/G top-bottom, t templates, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, gg/G top-bottom, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
     ];
 
     return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
