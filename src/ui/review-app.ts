@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { sliceByColumn } from "@earendil-works/pi-tui/dist/utils.js";
 import { adjustStructuredDiffContext, buildStructuredDiff, type StructuredDiff, type StructuredDiffVisibleItem } from "../diff.js";
 import {
   clampSelectedLineTarget,
@@ -414,11 +413,56 @@ function renderOuterFrame(
   return [top, ...body, bottom];
 }
 
+function sliceAnsiByColumn(line: string, startCol: number, length: number): string {
+  if (length <= 0) return "";
+
+  const ansiPattern = /\x1b\[[0-9;?]*[ -/]*[@-~]/y;
+  let column = 0;
+  let index = 0;
+  let result = "";
+  let activeSequences = "";
+  let started = false;
+
+  while (index < line.length) {
+    ansiPattern.lastIndex = index;
+    const ansiMatch = ansiPattern.exec(line);
+    if (ansiMatch != null) {
+      const sequence = ansiMatch[0]!;
+      index += sequence.length;
+      if (!started && column < startCol) {
+        activeSequences += sequence;
+      } else {
+        result += sequence;
+      }
+      continue;
+    }
+
+    const char = line[index]!;
+    const charWidth = visibleWidth(char);
+    const charStart = column;
+    const charEnd = column + charWidth;
+
+    if (charEnd > startCol && charStart < startCol + length) {
+      if (!started) {
+        result = activeSequences + result;
+        started = true;
+      }
+      result += char;
+    }
+
+    column = charEnd;
+    index += char.length;
+    if (column >= startCol + length) break;
+  }
+
+  return result;
+}
+
 function compositeLineAt(baseLine: string, overlayLine: string, left: number, totalWidth: number): string {
-  const prefix = sliceByColumn(baseLine, 0, left, true);
+  const prefix = sliceAnsiByColumn(baseLine, 0, left);
   const overlayWidth = visibleWidth(overlayLine);
   const suffixStart = left + overlayWidth;
-  const suffix = sliceByColumn(baseLine, suffixStart, Math.max(0, totalWidth - suffixStart), true);
+  const suffix = sliceAnsiByColumn(baseLine, suffixStart, Math.max(0, totalWidth - suffixStart));
   const composed = `${prefix}${overlayLine}${suffix}`;
   return composed + " ".repeat(Math.max(0, totalWidth - visibleWidth(composed)));
 }
@@ -436,7 +480,7 @@ export function renderCenteredOverlay(baseLines: string[], overlayLines: string[
     const row = top + i;
     const baseLine = result[row] ?? " ".repeat(totalWidth);
     const overlayLine = visibleWidth(overlayLines[i]!) > overlayWidth
-      ? sliceByColumn(overlayLines[i]!, 0, overlayWidth, true)
+      ? sliceAnsiByColumn(overlayLines[i]!, 0, overlayWidth)
       : overlayLines[i]!;
     result[row] = compositeLineAt(baseLine, overlayLine, left, totalWidth);
   }
