@@ -313,6 +313,14 @@ function getPanelItemLabel(theme: Theme, item: CommentPanelItem): string {
   return `${getIntentBadge(theme, item.comment.intent)} ${formatLineSideLabel(item.comment.side)} line ${item.comment.startLine}`;
 }
 
+export function getDraftCommentCount(state: ReviewState): number {
+  return state.draft.comments.length + (state.draft.allComment.trim().length > 0 ? 1 : 0);
+}
+
+export function getCancelAction(state: ReviewState): "cancel" | "confirm" {
+  return hasDraftContent(state) ? "confirm" : "cancel";
+}
+
 function centerText(text: string, width: number): string {
   const clean = truncateToWidth(text, width, "", false);
   const remaining = Math.max(0, width - visibleWidth(clean));
@@ -492,6 +500,7 @@ class ReviewApp {
   private searchBuffer = "";
   private shortcutMode = false;
   private helpMode = false;
+  private confirmCancel = false;
   private commentsHidden = false;
   private externalEditorOpen = false;
   private editTarget: EditTarget | null = null;
@@ -740,7 +749,8 @@ class ReviewApp {
     this.relatedFilterReturnFileId = null;
     this.searchMode = true;
     this.searchBuffer = this.state.searchQuery;
-    this.setMessage("Search files; Enter or Esc to finish.");
+    this.state = setFocus(this.state, "navigator");
+    this.confirmCancel = false;
     this.requestRender();
   }
 
@@ -982,6 +992,35 @@ class ReviewApp {
     this.done({ type: "cancel" });
   }
 
+  private requestCancel(): void {
+    if (getCancelAction(this.state) === "cancel") {
+      this.cancel();
+      return;
+    }
+
+    this.confirmCancel = true;
+    this.commentsHidden = false;
+    this.helpMode = false;
+    this.shortcutMode = false;
+    this.requestRender();
+  }
+
+  private keepReviewing(): void {
+    this.confirmCancel = false;
+    this.requestRender();
+  }
+
+  private handleCancelConfirmationInput(data: string): void {
+    if (data.toLowerCase() === "d") {
+      this.cancel();
+      return;
+    }
+
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+      this.keepReviewing();
+    }
+  }
+
   private moveHunk(delta: number): void {
     const file = this.activeFile();
     const diff = this.getDisplayDiff(file?.id ?? null, this.state.activeScope);
@@ -1021,18 +1060,19 @@ class ReviewApp {
 
   private openShortcutMode(): void {
     if (this.state.activeScope === "all-files") {
-      this.setMessage("Slash shortcuts are only available in git diff and last commit scopes.");
+      this.setMessage("Template shortcuts are only available in git diff and last commit scopes.");
       this.requestRender();
       return;
     }
     const shortcuts = this.getAvailableShortcuts();
     if (shortcuts.length === 0) {
-      this.setMessage("No slash shortcuts available for the selected line.");
+      this.setMessage("No template shortcuts available for the selected line.");
       this.requestRender();
       return;
     }
     this.commentsHidden = false;
     this.helpMode = false;
+    this.confirmCancel = false;
     this.shortcutMode = true;
     this.requestRender();
   }
@@ -1173,7 +1213,7 @@ class ReviewApp {
 
     const shortcut = this.getAvailableShortcuts().find((item) => item.key === key.toLowerCase());
     if (shortcut == null) {
-      this.setMessage(`No slash shortcut for '${key}'.`);
+      this.setMessage(`No template shortcut for '${key}'.`);
       this.shortcutMode = false;
       this.requestRender();
       return;
@@ -1252,6 +1292,11 @@ class ReviewApp {
       return;
     }
 
+    if (this.confirmCancel) {
+      this.handleCancelConfirmationInput(data);
+      return;
+    }
+
     if (data === "?") { this.toggleHelpMode(); return; }
     if (this.helpMode && matchesKey(data, Key.escape)) { this.helpMode = false; this.requestRender(); return; }
 
@@ -1260,7 +1305,8 @@ class ReviewApp {
     if (data === "3") { this.setScope("all-files"); return; }
     if (matchesKey(data, Key.shift("tab"))) { this.cycleVisibleFocus(true); return; }
     if (matchesKey(data, Key.tab)) { this.cycleVisibleFocus(); return; }
-    if (matchesKey(data, Key.escape)) { this.cancel(); return; }
+    if (data === "/") { this.openSearch(); return; }
+    if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) { this.requestCancel(); return; }
     if (data === "h") { this.toggleCommentsPane(); return; }
     if (data === "w") { this.state = setWrapLines(this.state, !this.state.wrapLines); this.requestRender(); return; }
     if (data === "u") { this.state = toggleHideUnchanged(this.state); this.ensureLineSelection(); this.requestRender(); return; }
@@ -1299,7 +1345,7 @@ class ReviewApp {
     }
 
     if (this.state.focus === "diff") {
-      if (data === "/") {
+      if (data === "t") {
         this.openShortcutMode();
         return;
       }
@@ -1344,8 +1390,6 @@ class ReviewApp {
       }
       return;
     }
-
-    if (data === "/") { this.openSearch(); return; }
 
     if (this.state.focus === "comments") {
       const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
@@ -1508,14 +1552,15 @@ class ReviewApp {
     lines.push(this.theme.fg("muted", "? toggle help • Esc close"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
-    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / shortcuts/search • r related • h comments • s submit"));
-    lines.push(this.theme.fg("muted", "f line fix • d/c line discuss • e edit line • x delete line"));
-    lines.push(this.theme.fg("muted", "Ctrl+d/u half-page • o open in $EDITOR • l file • a all • n/p hunks"));
+    lines.push(this.theme.fg("muted", "global: 1/2/3 scope • Tab/Shift+Tab focus • / search • t templates • h comments • s submit"));
+    lines.push(this.theme.fg("muted", "global: Esc cancel review • Ctrl+C cancel review alias • w wrap • u unchanged • ? help"));
+    lines.push(this.theme.fg("muted", "navigator/comments: ↑↓ or j/k move • Ctrl+d/u half-page • Enter edit/open"));
+    lines.push(this.theme.fg("muted", "diff: f fix • d/c discuss • e edit line comment • x delete • o open in $EDITOR • l file • a all • n/p hunks"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Editor"));
     lines.push(this.theme.fg("muted", "Tab toggle • Enter save • Shift+Enter newline • Esc cancel"));
     lines.push("");
-    lines.push(this.theme.fg("warning", "Slash shortcuts"));
+    lines.push(this.theme.fg("warning", "Template shortcuts"));
     if (activeShortcuts.length === 0) {
       lines.push(this.theme.fg("dim", "No active shortcuts for the current selection."));
     } else {
@@ -1529,6 +1574,19 @@ class ReviewApp {
     lines.push(...wrapAnsiText(this.theme.fg("muted", getShortcutConfigPath()), Math.max(10, width - 4), true));
 
     return renderBox("Help", width, height, this.theme, lines, true);
+  }
+
+  private renderCancelConfirmation(width: number, height: number): string[] {
+    const count = getDraftCommentCount(this.state);
+    const noun = count === 1 ? "draft item" : "draft items";
+    const lines = [
+      this.theme.fg("warning", `Discard ${count} ${noun}?`),
+      "",
+      this.theme.fg("muted", "d discard review"),
+      this.theme.fg("muted", "Enter keep reviewing"),
+      this.theme.fg("muted", "Esc keep reviewing • Ctrl+C keep reviewing"),
+    ];
+    return renderBox("Discard review", width, height, this.theme, lines, true);
   }
 
   private renderComments(width: number, height: number): string[] {
@@ -1545,8 +1603,8 @@ class ReviewApp {
       lines.push("");
 
       if (shortcuts.length === 0) {
-        lines.push(this.theme.fg("warning", "No shortcuts available."));
-        return renderBox("Slash shortcuts", width, height, this.theme, lines, true);
+        lines.push(this.theme.fg("warning", "No template shortcuts available."));
+        return renderBox("Template shortcuts", width, height, this.theme, lines, true);
       }
 
       const groups = [
@@ -1570,11 +1628,15 @@ class ReviewApp {
         }
       });
 
-      return renderBox("Slash shortcuts", width, height, this.theme, lines, true);
+      return renderBox("Template shortcuts", width, height, this.theme, lines, true);
     }
 
     if (this.helpMode) {
       return this.renderHelpPanel(width, height);
+    }
+
+    if (this.confirmCancel) {
+      return this.renderCancelConfirmation(width, height);
     }
 
     if (this.editTarget != null) {
@@ -1647,6 +1709,18 @@ class ReviewApp {
     const frameColor = "accent" as const;
     const frameInnerWidth = Math.max(20, this.lastWidth - 2 - MODAL_INNER_PADDING_X * 2);
     const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
+
+    if (this.confirmCancel) {
+      const count = getDraftCommentCount(this.state);
+      const noun = count === 1 ? "draft item" : "draft items";
+      return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "Discard review", [
+        this.theme.fg("warning", `Discard ${count} ${noun}?`),
+        "",
+        this.theme.fg("muted", "Press d to discard this review."),
+        this.theme.fg("muted", "Press Enter, Esc, or Ctrl+C to keep reviewing."),
+      ], frameColor);
+    }
+
     const stackPanes = shouldStackPanes(frameInnerWidth);
     const bodyHeight = Math.max(stackPanes && !this.commentsHidden ? 9 : 6, frameInnerHeight - 5);
     const terminalCols = this.tui?.terminal?.columns ?? this.lastWidth;
@@ -1657,14 +1731,14 @@ class ReviewApp {
 
     const layoutStatus = stackPanes ? "stacked layout • " : "";
     const promptStatus = this.shortcutMode
-      ? "Shortcut mode • choose from the comments panel • Esc cancel"
+      ? "Template shortcuts • choose from the comments panel • Esc cancel"
       : this.helpMode
         ? "Help open • ? toggle • Esc close"
         : this.message ?? (this.searchMode
           ? `Search: ${this.searchBuffer}`
           : this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : `${layoutStatus}Tab focus • / search • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open • s submit • Esc cancel`);
+            : `${layoutStatus}Tab focus • / search • t templates • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit • Esc cancel • Ctrl+C cancel`);
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
@@ -1718,7 +1792,7 @@ class ReviewApp {
 
     const footer = [
       truncateToWidth(this.theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, r related filter • diff: ↑↓ lines, Ctrl+d/u half-page, / shortcuts, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
+      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, r related filter • diff: ↑↓ lines, Ctrl+d/u half-page, t templates, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
     ];
 
     return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);

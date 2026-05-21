@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
-import type { ReviewFile } from "../types.js";
-import { buildDisplayRows, buildEditorLaunchCommand, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, shouldStackPanes } from "../ui/review-app.js";
+import type { DiffReviewComment, ReviewFile, ReviewState } from "../types.js";
+import { buildDisplayRows, buildEditorLaunchCommand, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, shouldStackPanes } from "../ui/review-app.js";
 
 function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
   return {
@@ -18,6 +18,36 @@ function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
     ...flags,
   };
 }
+
+function makeState(draft?: Partial<ReviewState["draft"]>): ReviewState {
+  return {
+    activeScope: "git-diff",
+    activeFileId: "src/app.ts",
+    searchQuery: "",
+    focus: "diff",
+    wrapLines: false,
+    hideUnchanged: false,
+    selectedCommentIndex: 0,
+    selectedLineTargetByScopeFile: {},
+    draft: {
+      allComment: "",
+      allIntent: "fix",
+      comments: [],
+      ...draft,
+    },
+  };
+}
+
+const lineComment: DiffReviewComment = {
+  id: "line:git-diff:src/app.ts:added:2",
+  fileId: "src/app.ts",
+  scope: "git-diff",
+  side: "added",
+  intent: "fix",
+  startLine: 2,
+  endLine: 2,
+  body: "Rename this.",
+};
 
 describe("buildDisplayRows", () => {
   it("keeps deleted and added rows independently commentable when line numbers overlap", () => {
@@ -118,6 +148,19 @@ describe("parseMouseWheelInput", () => {
 
   it("ignores non-wheel mouse events", () => {
     expect(parseMouseWheelInput("\x1b[<0;10;5M")).toBeNull();
+  });
+});
+
+describe("cancel helpers", () => {
+  it("counts scoped comments and the review-wide note", () => {
+    expect(getDraftCommentCount(makeState())).toBe(0);
+    expect(getDraftCommentCount(makeState({ comments: [lineComment] }))).toBe(1);
+    expect(getDraftCommentCount(makeState({ allComment: "Explain the diff.", comments: [lineComment] }))).toBe(2);
+  });
+
+  it("confirms cancellation when draft feedback exists", () => {
+    expect(getCancelAction(makeState())).toBe("cancel");
+    expect(getCancelAction(makeState({ comments: [lineComment] }))).toBe("confirm");
   });
 });
 
