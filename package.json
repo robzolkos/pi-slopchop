@@ -48,7 +48,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-tui": "*",
-    "diff": "^8.0.2"
+    "@pierre/diffs": "^1.2.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

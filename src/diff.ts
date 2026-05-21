@@ -1,4 +1,4 @@
-import * as Diff from "diff";
+import { parseDiffFromFile, type FileDiffMetadata } from "@pierre/diffs";
 
 export interface InlineRange {
   start: number;
@@ -84,6 +84,11 @@ function splitDiffLines(value: string): string[] {
   return lines.map(normalizeDiffDisplayText);
 }
 
+function normalizePierreLine(line: string | undefined): string {
+  if (line == null) return "";
+  return normalizeDiffDisplayText(line.replace(/\r?\n$/, ""));
+}
+
 function charLength(text: string): number {
   return Array.from(text).length;
 }
@@ -132,27 +137,50 @@ function computeInlineHighlights(oldText: string, newText: string): { oldHighlig
     return { oldHighlights: fullHighlight(oldText), newHighlights: fullHighlight(newText) };
   }
 
-  const changes = Diff.diffChars(oldText, newText);
   const oldHighlights: InlineRange[] = [];
   const newHighlights: InlineRange[] = [];
-  let oldOffset = 0;
-  let newOffset = 0;
+  const oldChars = Array.from(oldText);
+  const newChars = Array.from(newText);
+  const table = Array.from({ length: oldChars.length + 1 }, () => new Uint16Array(newChars.length + 1));
 
-  for (const change of changes) {
-    const length = charLength(change.value);
-    if (change.added) {
-      newHighlights.push({ start: newOffset, end: newOffset + length });
-      newOffset += length;
+  for (let oldIndex = oldChars.length - 1; oldIndex >= 0; oldIndex -= 1) {
+    const current = table[oldIndex]!;
+    const next = table[oldIndex + 1]!;
+    for (let newIndex = newChars.length - 1; newIndex >= 0; newIndex -= 1) {
+      current[newIndex] = oldChars[oldIndex] === newChars[newIndex]
+        ? next[newIndex + 1]! + 1
+        : Math.max(next[newIndex]!, current[newIndex + 1]!);
+    }
+  }
+
+  let oldIndex = 0;
+  let newIndex = 0;
+
+  while (oldIndex < oldChars.length && newIndex < newChars.length) {
+    if (oldChars[oldIndex] === newChars[newIndex]) {
+      oldIndex += 1;
+      newIndex += 1;
       continue;
     }
-    if (change.removed) {
-      oldHighlights.push({ start: oldOffset, end: oldOffset + length });
-      oldOffset += length;
+
+    if (table[oldIndex + 1]![newIndex]! >= table[oldIndex]![newIndex + 1]!) {
+      oldHighlights.push({ start: oldIndex, end: oldIndex + 1 });
+      oldIndex += 1;
       continue;
     }
 
-    oldOffset += length;
-    newOffset += length;
+    newHighlights.push({ start: newIndex, end: newIndex + 1 });
+    newIndex += 1;
+  }
+
+  while (oldIndex < oldChars.length) {
+    oldHighlights.push({ start: oldIndex, end: oldIndex + 1 });
+    oldIndex += 1;
+  }
+
+  while (newIndex < newChars.length) {
+    newHighlights.push({ start: newIndex, end: newIndex + 1 });
+    newIndex += 1;
   }
 
   return {
@@ -192,94 +220,96 @@ function buildAlignedRows(oldContent: string, newContent: string): {
   totalOldLines: number;
   totalNewLines: number;
 } {
-  const parts = Diff.diffLines(oldContent, newContent);
+  if (oldContent === newContent) {
+    const rows = splitDiffLines(oldContent).map((line, index) => createRow("equal", index + 1, index + 1, line, line));
+    const totalLines = countLogicalLines(oldContent);
+    return {
+      rows,
+      totalOldLines: Math.max(totalLines, rows.length),
+      totalNewLines: Math.max(totalLines, rows.length),
+    };
+  }
+
+  const fileDiff = parseDiffFromFile(
+    { name: "old", contents: oldContent },
+    { name: "new", contents: newContent },
+    undefined,
+    true,
+  );
+
+  return buildAlignedRowsFromPierreDiff(fileDiff, oldContent, newContent);
+}
+
+function buildAlignedRowsFromPierreDiff(fileDiff: FileDiffMetadata, oldContent: string, newContent: string): {
+  rows: StructuredDiffRow[];
+  totalOldLines: number;
+  totalNewLines: number;
+} {
   const rows: StructuredDiffRow[] = [];
   let oldLineNumber = 1;
   let newLineNumber = 1;
 
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]!;
-    const next = parts[i + 1];
-
-    if (part.removed && next?.added) {
-      const removedLines = splitDiffLines(part.value);
-      const addedLines = splitDiffLines(next.value);
-      const count = Math.max(removedLines.length, addedLines.length);
-
-      for (let j = 0; j < count; j++) {
-        const oldText = removedLines[j];
-        const newText = addedLines[j];
-        if (oldText !== undefined && newText !== undefined) {
-          rows.push(createRow("replace", oldLineNumber, newLineNumber, oldText, newText));
-          oldLineNumber += 1;
-          newLineNumber += 1;
-          continue;
-        }
-        if (oldText !== undefined) {
-          rows.push(createRow("delete", oldLineNumber, undefined, oldText, ""));
-          oldLineNumber += 1;
-          continue;
-        }
-        if (newText !== undefined) {
-          rows.push(createRow("insert", undefined, newLineNumber, "", newText));
-          newLineNumber += 1;
-        }
-      }
-
-      i += 1;
-      continue;
-    }
-
-    if (part.added && next?.removed) {
-      const addedLines = splitDiffLines(part.value);
-      const removedLines = splitDiffLines(next.value);
-      const count = Math.max(removedLines.length, addedLines.length);
-
-      for (let j = 0; j < count; j++) {
-        const oldText = removedLines[j];
-        const newText = addedLines[j];
-        if (oldText !== undefined && newText !== undefined) {
-          rows.push(createRow("replace", oldLineNumber, newLineNumber, oldText, newText));
-          oldLineNumber += 1;
-          newLineNumber += 1;
-          continue;
-        }
-        if (oldText !== undefined) {
-          rows.push(createRow("delete", oldLineNumber, undefined, oldText, ""));
-          oldLineNumber += 1;
-          continue;
-        }
-        if (newText !== undefined) {
-          rows.push(createRow("insert", undefined, newLineNumber, "", newText));
-          newLineNumber += 1;
-        }
-      }
-
-      i += 1;
-      continue;
-    }
-
-    if (part.removed) {
-      for (const line of splitDiffLines(part.value)) {
-        rows.push(createRow("delete", oldLineNumber, undefined, line, ""));
-        oldLineNumber += 1;
-      }
-      continue;
-    }
-
-    if (part.added) {
-      for (const line of splitDiffLines(part.value)) {
-        rows.push(createRow("insert", undefined, newLineNumber, "", line));
-        newLineNumber += 1;
-      }
-      continue;
-    }
-
-    for (const line of splitDiffLines(part.value)) {
-      rows.push(createRow("equal", oldLineNumber, newLineNumber, line, line));
+  const pushEqualRowsUntil = (targetOldLine: number, targetNewLine: number): void => {
+    while (oldLineNumber < targetOldLine && newLineNumber < targetNewLine) {
+      const oldText = normalizePierreLine(fileDiff.deletionLines[oldLineNumber - 1]);
+      const newText = normalizePierreLine(fileDiff.additionLines[newLineNumber - 1]);
+      rows.push(createRow("equal", oldLineNumber, newLineNumber, oldText, newText));
       oldLineNumber += 1;
       newLineNumber += 1;
     }
+  };
+
+  for (const hunk of fileDiff.hunks) {
+    pushEqualRowsUntil(hunk.deletionStart, hunk.additionStart);
+
+    for (const content of hunk.hunkContent) {
+      if (content.type === "context") {
+        for (let i = 0; i < content.lines; i += 1) {
+          const oldText = normalizePierreLine(fileDiff.deletionLines[oldLineNumber - 1]);
+          const newText = normalizePierreLine(fileDiff.additionLines[newLineNumber - 1]);
+          rows.push(createRow("equal", oldLineNumber, newLineNumber, oldText, newText));
+          oldLineNumber += 1;
+          newLineNumber += 1;
+        }
+        continue;
+      }
+
+      const count = Math.max(content.deletions, content.additions);
+      for (let i = 0; i < count; i += 1) {
+        const oldText = i < content.deletions ? normalizePierreLine(fileDiff.deletionLines[content.deletionLineIndex + i]) : undefined;
+        const newText = i < content.additions ? normalizePierreLine(fileDiff.additionLines[content.additionLineIndex + i]) : undefined;
+
+        if (oldText != null && newText != null) {
+          rows.push(createRow("replace", oldLineNumber, newLineNumber, oldText, newText));
+          oldLineNumber += 1;
+          newLineNumber += 1;
+          continue;
+        }
+
+        if (oldText != null) {
+          rows.push(createRow("delete", oldLineNumber, undefined, oldText, ""));
+          oldLineNumber += 1;
+          continue;
+        }
+
+        if (newText != null) {
+          rows.push(createRow("insert", undefined, newLineNumber, "", newText));
+          newLineNumber += 1;
+        }
+      }
+    }
+  }
+
+  pushEqualRowsUntil(fileDiff.deletionLines.length + 1, fileDiff.additionLines.length + 1);
+
+  while (oldLineNumber <= fileDiff.deletionLines.length) {
+    rows.push(createRow("delete", oldLineNumber, undefined, normalizePierreLine(fileDiff.deletionLines[oldLineNumber - 1]), ""));
+    oldLineNumber += 1;
+  }
+
+  while (newLineNumber <= fileDiff.additionLines.length) {
+    rows.push(createRow("insert", undefined, newLineNumber, "", normalizePierreLine(fileDiff.additionLines[newLineNumber - 1])));
+    newLineNumber += 1;
   }
 
   return {
