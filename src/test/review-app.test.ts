@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import type { DiffReviewComment, ReviewFile, ReviewState } from "../types.js";
-import { buildDisplayRows, buildEditorLaunchCommand, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, shouldStackPanes } from "../ui/review-app.js";
+import { buildDisplayRows, buildEditorLaunchCommand, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
 
 function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
   return {
@@ -161,6 +161,35 @@ describe("cancel helpers", () => {
   it("confirms cancellation when draft feedback exists", () => {
     expect(getCancelAction(makeState())).toBe("cancel");
     expect(getCancelAction(makeState({ comments: [lineComment] }))).toBe("confirm");
+  });
+});
+
+describe("renderCenteredOverlay", () => {
+  it("draws a centered overlay without replacing the background outside the popup", () => {
+    const base = [
+      ".......",
+      ".......",
+      ".......",
+      ".......",
+      ".......",
+      ".......",
+      ".......",
+    ];
+    const overlay = [
+      "+-+",
+      "|x|",
+      "+-+",
+    ];
+
+    expect(renderCenteredOverlay(base, overlay, 7, 7)).toEqual([
+      ".......",
+      ".......",
+      "..+-+..",
+      "..|x|..",
+      "..+-+..",
+      ".......",
+      ".......",
+    ]);
   });
 });
 

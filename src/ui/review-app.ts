@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { sliceByColumn } from "@earendil-works/pi-tui/dist/utils.js";
 import { adjustStructuredDiffContext, buildStructuredDiff, type StructuredDiff, type StructuredDiffVisibleItem } from "../diff.js";
 import {
   clampSelectedLineTarget,
@@ -411,6 +412,36 @@ function renderOuterFrame(
   }
 
   return [top, ...body, bottom];
+}
+
+function compositeLineAt(baseLine: string, overlayLine: string, left: number, totalWidth: number): string {
+  const prefix = sliceByColumn(baseLine, 0, left, true);
+  const overlayWidth = visibleWidth(overlayLine);
+  const suffixStart = left + overlayWidth;
+  const suffix = sliceByColumn(baseLine, suffixStart, Math.max(0, totalWidth - suffixStart), true);
+  const composed = `${prefix}${overlayLine}${suffix}`;
+  return composed + " ".repeat(Math.max(0, totalWidth - visibleWidth(composed)));
+}
+
+export function renderCenteredOverlay(baseLines: string[], overlayLines: string[], totalWidth: number, totalHeight = baseLines.length): string[] {
+  if (overlayLines.length === 0) return [...baseLines];
+
+  const overlayWidth = Math.min(totalWidth, Math.max(...overlayLines.map((line) => visibleWidth(line))));
+  const overlayHeight = Math.min(totalHeight, overlayLines.length);
+  const left = Math.max(0, Math.floor((totalWidth - overlayWidth) / 2));
+  const top = Math.max(0, Math.floor((totalHeight - overlayHeight) / 2));
+  const result = [...baseLines];
+
+  for (let i = 0; i < overlayHeight; i += 1) {
+    const row = top + i;
+    const baseLine = result[row] ?? " ".repeat(totalWidth);
+    const overlayLine = visibleWidth(overlayLines[i]!) > overlayWidth
+      ? sliceByColumn(overlayLines[i]!, 0, overlayWidth, true)
+      : overlayLines[i]!;
+    result[row] = compositeLineAt(baseLine, overlayLine, left, totalWidth);
+  }
+
+  return result;
 }
 
 export type DisplayRow =
@@ -1672,7 +1703,7 @@ class ReviewApp {
     return renderBox("Help", width, height, this.theme, lines, true);
   }
 
-  private renderCancelConfirmation(width: number, height: number): string[] {
+  private renderCancelConfirmation(): string[] {
     const count = getDraftCommentCount(this.state);
     const noun = count === 1 ? "draft item" : "draft items";
     const lines = [
@@ -1682,7 +1713,7 @@ class ReviewApp {
       this.theme.fg("muted", "Enter keep reviewing"),
       this.theme.fg("muted", "Esc keep reviewing • Ctrl+C keep reviewing"),
     ];
-    return renderBox("Discard review", width, height, this.theme, lines, true);
+    return renderBox("Discard review", 50, 7, this.theme, lines, true);
   }
 
   private renderComments(width: number, height: number): string[] {
@@ -1729,10 +1760,6 @@ class ReviewApp {
 
     if (this.helpMode) {
       return this.renderHelpPanel(width, height);
-    }
-
-    if (this.confirmCancel) {
-      return this.renderCancelConfirmation(width, height);
     }
 
     if (this.editTarget != null) {
@@ -1805,17 +1832,6 @@ class ReviewApp {
     const frameColor = "accent" as const;
     const frameInnerWidth = Math.max(20, this.lastWidth - 2 - MODAL_INNER_PADDING_X * 2);
     const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
-
-    if (this.confirmCancel) {
-      const count = getDraftCommentCount(this.state);
-      const noun = count === 1 ? "draft item" : "draft items";
-      return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "Discard review", [
-        this.theme.fg("warning", `Discard ${count} ${noun}?`),
-        "",
-        this.theme.fg("muted", "Press d to discard this review."),
-        this.theme.fg("muted", "Press Enter, Esc, or Ctrl+C to keep reviewing."),
-      ], frameColor);
-    }
 
     const stackPanes = shouldStackPanes(frameInnerWidth);
     const bodyHeight = Math.max(stackPanes && !this.commentsHidden ? 9 : 6, frameInnerHeight - 5);
@@ -1891,7 +1907,9 @@ class ReviewApp {
       truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, gg/G top-bottom, r related filter • diff: ↑↓ lines, Shift+↑↓ range, Ctrl+d/u half-page, gg/G top-bottom, t templates, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, gg/G top-bottom, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
     ];
 
-    return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
+    const rendered = renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
+    if (!this.confirmCancel) return rendered;
+    return renderCenteredOverlay(rendered, this.renderCancelConfirmation(), this.lastWidth, totalHeight);
   }
 }
 
