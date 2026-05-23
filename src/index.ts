@@ -9,7 +9,7 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
 
   async function openReview(ctx: ExtensionContext): Promise<void> {
     if (activeReview) {
-      ctx.ui.notify("A /slopchop review session is already open.", "warning");
+      ctx.ui.notify("A review session is already open.", "warning");
       return;
     }
 
@@ -43,21 +43,24 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
       ctx.ui.notify("Inserted review feedback into the editor.", "info");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`Could not open /slopchop: ${message}`, "error");
+      ctx.ui.notify(`Could not open review UI: ${message}`, "error");
     } finally {
       activeReview = false;
     }
   }
 
-  pi.registerCommand("slopchop", {
+  const reviewCommand = {
     description: "Review and annotate code changes",
-    handler: async (_args, ctx) => {
+    handler: async (_args: string, ctx: ExtensionContext) => {
       await openReview(ctx);
     },
-  });
+  };
+
+  pi.registerCommand("slopchop", reviewCommand);
+  pi.registerCommand("diff", reviewCommand);
 
   pi.registerShortcut("alt+s", {
-    description: "Open /slopchop",
+    description: "Open review UI",
     handler: async (ctx) => {
       await openReview(ctx);
     },
