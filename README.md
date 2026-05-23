@@ -1,6 +1,6 @@
 # pi-slopchop
 
-`/slopchop` is a terminal-native review and annotation surface for Pi.
+`/slopchop` and `/diff` open a terminal-native review and annotation surface for Pi.
 
 It is inspired by Mario Zechner's [pi-diff-review](https://github.com/badlogic/pi-diff-review).
 
@@ -10,7 +10,7 @@ The goal is simple: keep terminal-based review within Pi, keep annotations preci
 
 ## Summary
 
-Use `/slopchop` when you want to review and annotate work before sending the agent another turn.
+Use `/slopchop` or `/diff` when you want to review and annotate work before sending the agent another turn.
 
 It supports three review scopes:
 
@@ -29,7 +29,7 @@ Inside the review UI you can:
   - `DISCUSS` — the agent should explain, justify, or propose, without editing code just to satisfy the comment
 - insert the resulting review prompt into Pi’s editor
 
-`/slopchop` does **not** auto-send the prompt. It stages the next message for you.
+The review UI does **not** auto-send the prompt. It stages the next message for you.
 
 ## Quickstart
 
@@ -49,6 +49,12 @@ Inside a git repo in Pi:
 /slopchop
 ```
 
+You can also use the shorter command:
+
+```text
+/diff
+```
+
 Or use the global shortcut:
 
 ```text
@@ -57,13 +63,13 @@ alt+s
 
 ### Basic flow
 
-1. Run `/slopchop`
+1. Run `/slopchop` or `/diff`
 2. Pick a scope:
    - `git diff` — review your current uncommitted working tree changes against `HEAD`
    - `last commit` — review the most recent commit against its parent
    - `all files` — review files changed on the current branch compared with the default branch; if there are no changed scopes, falls back to current file contents
 
-   By default, `/slopchop` opens the first scope that makes sense for the repo in this order:
+   By default, the review UI opens the first scope that makes sense for the repo in this order:
    - `git diff` if there are uncommitted changes
    - otherwise `all files` if the current branch differs from the default branch
    - otherwise `last commit` if there is a reviewable last commit
@@ -92,7 +98,7 @@ That creates a templated annotation instantly. If you want to refine it afterwar
 
 ### Annotation model
 
-`/slopchop` treats feedback as one of three scopes:
+The review UI treats feedback as one of three scopes:
 
 #### Line comments
 
@@ -148,7 +154,7 @@ Examples:
 - explain this change to me
 - is this approach intentional?
 
-When `/slopchop` generates the prompt, it uses different wording depending on whether your review is:
+When the review UI generates the prompt, it uses different wording depending on whether your review is:
 
 - `DISCUSS` only
 - `FIX` only
@@ -188,7 +194,7 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
 - `gg / G` — jump to the top / bottom
 - `n / p` — next / previous hunk
-- `o` — open the selected source location in `$EDITOR`, then return to `/slopchop` when the editor exits
+- `o` — open the selected source location in `$EDITOR`, then return to the review UI when the editor exits
 - `f` — line comment, default `FIX`
 - `d` or `c` — line comment, default `DISCUSS`
 - `e` — edit the existing line comment on the selected line
@@ -197,7 +203,7 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `a` — whole-change note
 - `t` — open template shortcut mode for the selected line
 
-Opening a source location in `$EDITOR` returns you to `/slopchop` when the editor exits and keeps your draft feedback available for submission.
+Opening a source location in `$EDITOR` returns you to the review UI when the editor exits and keeps your draft feedback available for submission.
 
 Line comment markers in the diff gutter:
 
