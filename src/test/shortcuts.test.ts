@@ -23,6 +23,41 @@ describe("comment shortcuts", () => {
     expect(parsed.warnings[0]).toContain("Ignoring globalShortcut");
   });
 
+  it("falls back to the default global shortcut for an empty string", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "   " });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("Ignoring globalShortcut");
+  });
+
+  it("falls back to the default global shortcut for a non-string value", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: 42 });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("Ignoring globalShortcut");
+  });
+
+  it("requires a modifier for a single-character global shortcut", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "s" });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("needs a modifier");
+  });
+
+  it("allows a standalone special key as the global shortcut", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "f5" });
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.globalShortcut).toBe("f5");
+  });
+
+  it("normalizes the configured global shortcut to lower case", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "  CTRL+ALT+R  " });
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.globalShortcut).toBe("ctrl+alt+r");
+  });
+
   it("allows disabling builtins and adding a custom shortcut", () => {
     const parsed = parseShortcutConfig({
       version: 1,

@@ -277,7 +277,7 @@ Example:
 #### Fields
 
 - `version` — schema version, currently `1`
-- `globalShortcut` — global Pi shortcut that opens the review UI, defaults to `alt+s`
+- `globalShortcut` — global Pi shortcut that opens the review UI, defaults to `alt+s`. Must include a modifier when bound to a single character (e.g. `alt+s`, `ctrl+alt+r`); standalone special keys like `f5` are also allowed. Read once when the extension loads, so restart Pi or run `/reload` after changing it.
 - `builtins.disable` — built-in shortcut ids to turn off
 - `shortcuts` — your custom shortcuts
 

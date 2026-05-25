@@ -8,6 +8,11 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
   const initialShortcutConfig = loadCommentShortcuts();
   let activeReview = false;
 
+  function notifyShortcutWarnings(ctx: ExtensionContext, warnings: string[]): void {
+    if (warnings.length === 0 || !ctx.hasUI) return;
+    ctx.ui.notify(`slopchop config: ${warnings.join(" ")}`, "warning");
+  }
+
   async function openReview(ctx: ExtensionContext): Promise<void> {
     if (activeReview) {
       ctx.ui.notify("A review session is already open.", "warning");
@@ -23,9 +28,7 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
         return;
       }
 
-      if (shortcutConfig.warnings.length > 0) {
-        ctx.ui.notify(`Loaded slopchop shortcuts with ${shortcutConfig.warnings.length} warning${shortcutConfig.warnings.length === 1 ? "" : "s"}. Using valid entries only.`, "warning");
-      }
+      notifyShortcutWarnings(ctx, shortcutConfig.warnings);
 
       const result = await runReviewApp(ctx, {
         files,
@@ -65,6 +68,15 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
     handler: async (ctx) => {
       await openReview(ctx);
     },
+  });
+
+  // The global shortcut is registered once at load and cannot be re-bound for the
+  // rest of the session, so surface any config problems up front rather than
+  // waiting for the first review to open.
+  pi.on("session_start", async (event, ctx) => {
+    if (event.reason === "startup") {
+      notifyShortcutWarnings(ctx, initialShortcutConfig.warnings);
+    }
   });
 
   pi.on("session_shutdown", async () => {

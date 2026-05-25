@@ -65,19 +65,44 @@ function isPrintableSingleCharacter(value: string): boolean {
   return /^[ -~]$/.test(value) && value !== "/";
 }
 
+// These key tables mirror the `BaseKey` and `ModifierName` unions that pi-tui
+// uses to build `KeyId` (see node_modules/@earendil-works/pi-tui/dist/keys.d.ts).
+// Pi ships no runtime validator, so we keep them in sync by hand — update them if
+// the library adds keys or modifiers. Names are lower-cased because pi-tui matches
+// keys case-insensitively (`parseKeyId` lower-cases every KeyId before comparing),
+// which is why `pageup`/`pagedown` appear here rather than the type-level
+// `pageUp`/`pageDown`.
+const VALID_MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
+const SYMBOL_KEYS = new Set([
+  "`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "!", "@", "#", "$", "%",
+  "^", "&", "*", "(", ")", "_", "+", "|", "~", "{", "}", ":", "<", ">", "?",
+]);
+const SPECIAL_KEYS = new Set([
+  "escape", "esc", "enter", "return", "tab", "space", "backspace", "delete", "insert",
+  "clear", "home", "end", "pageup", "pagedown", "up", "down", "left", "right",
+  "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+]);
+
+// A "printable" key is a single character that produces text when typed on its
+// own (letters, digits, symbols), as opposed to special keys like arrows or
+// function keys. Used as a single-char global shortcut it would capture normal
+// typing, so we require a modifier for these.
+function isPrintableKey(key: string): boolean {
+  return /^[a-z0-9]$/.test(key) || SYMBOL_KEYS.has(key);
+}
+
+// Expects an already-normalized (trimmed, lower-cased) value; the only caller is
+// parseGlobalShortcut, which normalizes first.
 function isValidKeyId(value: string): boolean {
-  const parts = value.toLowerCase().split("+");
+  const parts = value.split("+");
   const key = parts.at(-1);
   if (key == null || key.length === 0) return false;
 
   const modifiers = parts.slice(0, -1);
-  const validModifiers = new Set(["ctrl", "shift", "alt", "super"]);
   if (modifiers.length !== new Set(modifiers).size) return false;
-  if (!modifiers.every((modifier) => validModifiers.has(modifier))) return false;
+  if (!modifiers.every((modifier) => VALID_MODIFIERS.has(modifier))) return false;
 
-  return /^[a-z0-9]$/.test(key)
-    || ["`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "|", "~", "{", "}", ":", "<", ">", "?"].includes(key)
-    || ["escape", "esc", "enter", "return", "tab", "space", "backspace", "delete", "insert", "clear", "home", "end", "pageup", "pagedown", "up", "down", "left", "right", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"].includes(key);
+  return isPrintableKey(key) || SPECIAL_KEYS.has(key);
 }
 
 function parseGlobalShortcut(value: unknown, warnings: string[]): KeyId {
@@ -90,6 +115,14 @@ function parseGlobalShortcut(value: unknown, warnings: string[]): KeyId {
   const normalized = value.trim().toLowerCase();
   if (!isValidKeyId(normalized)) {
     warnings.push(`Ignoring globalShortcut "${value}": expected a valid key identifier. Using ${DEFAULT_GLOBAL_SHORTCUT}.`);
+    return DEFAULT_GLOBAL_SHORTCUT;
+  }
+
+  // A bare printable character (no modifier) would fire while the user is typing,
+  // so require at least one modifier for those. Special keys (f-keys, arrows, …)
+  // are safe on their own.
+  if (!normalized.includes("+") && isPrintableKey(normalized)) {
+    warnings.push(`Ignoring globalShortcut "${value}": a single character needs a modifier (e.g. "alt+s") so it does not capture normal typing. Using ${DEFAULT_GLOBAL_SHORTCUT}.`);
     return DEFAULT_GLOBAL_SHORTCUT;
   }
 
