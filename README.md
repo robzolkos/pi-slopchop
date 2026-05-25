@@ -55,7 +55,7 @@ You can also use the shorter command:
 /diff
 ```
 
-Or use the global shortcut:
+Or use the global shortcut, which defaults to:
 
 ```text
 alt+s
@@ -257,6 +257,7 @@ Example:
 ```json
 {
   "version": 1,
+  "globalShortcut": "ctrl+alt+r",
   "builtins": {
     "disable": ["restore-deleted"]
   },
@@ -276,6 +277,7 @@ Example:
 #### Fields
 
 - `version` — schema version, currently `1`
+- `globalShortcut` — global Pi shortcut that opens the review UI, defaults to `alt+s`
 - `builtins.disable` — built-in shortcut ids to turn off
 - `shortcuts` — your custom shortcuts
 

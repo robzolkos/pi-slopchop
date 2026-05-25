@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { KeyId } from "@earendil-works/pi-tui";
 import type { CommentIntent } from "./types.js";
 
 export type ShortcutSide = "added" | "deleted" | "both";
@@ -17,6 +18,7 @@ export interface CommentShortcut {
 interface ShortcutConfigFile {
   $schema?: string;
   version?: unknown;
+  globalShortcut?: unknown;
   builtins?: {
     disable?: unknown;
   };
@@ -34,11 +36,13 @@ interface ShortcutConfigEntry {
 
 export interface LoadedCommentShortcuts {
   shortcuts: CommentShortcut[];
+  globalShortcut: KeyId;
   warnings: string[];
   path: string;
 }
 
 const CONFIG_FILE_NAME = "slopchop.json";
+export const DEFAULT_GLOBAL_SHORTCUT: KeyId = "alt+s";
 
 export const BUILTIN_COMMENT_SHORTCUTS: CommentShortcut[] = [
   { id: "explain-added", key: "e", label: "explain", intent: "discuss", side: "added", text: "Explain what this code is doing." },
@@ -59,6 +63,37 @@ function overlaps(a: ShortcutSide, b: ShortcutSide): boolean {
 
 function isPrintableSingleCharacter(value: string): boolean {
   return /^[ -~]$/.test(value) && value !== "/";
+}
+
+function isValidKeyId(value: string): boolean {
+  const parts = value.toLowerCase().split("+");
+  const key = parts.at(-1);
+  if (key == null || key.length === 0) return false;
+
+  const modifiers = parts.slice(0, -1);
+  const validModifiers = new Set(["ctrl", "shift", "alt", "super"]);
+  if (modifiers.length !== new Set(modifiers).size) return false;
+  if (!modifiers.every((modifier) => validModifiers.has(modifier))) return false;
+
+  return /^[a-z0-9]$/.test(key)
+    || ["`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "|", "~", "{", "}", ":", "<", ">", "?"].includes(key)
+    || ["escape", "esc", "enter", "return", "tab", "space", "backspace", "delete", "insert", "clear", "home", "end", "pageup", "pagedown", "up", "down", "left", "right", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"].includes(key);
+}
+
+function parseGlobalShortcut(value: unknown, warnings: string[]): KeyId {
+  if (value == null) return DEFAULT_GLOBAL_SHORTCUT;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    warnings.push(`Ignoring globalShortcut: expected a non-empty key identifier. Using ${DEFAULT_GLOBAL_SHORTCUT}.`);
+    return DEFAULT_GLOBAL_SHORTCUT;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!isValidKeyId(normalized)) {
+    warnings.push(`Ignoring globalShortcut "${value}": expected a valid key identifier. Using ${DEFAULT_GLOBAL_SHORTCUT}.`);
+    return DEFAULT_GLOBAL_SHORTCUT;
+  }
+
+  return normalized as KeyId;
 }
 
 function validateShortcut(entry: ShortcutConfigEntry, index: number, warnings: string[]): CommentShortcut | null {
@@ -97,9 +132,10 @@ function validateShortcut(entry: ShortcutConfigEntry, index: number, warnings: s
   };
 }
 
-export function parseShortcutConfig(config: unknown): { shortcuts: CommentShortcut[]; warnings: string[] } {
+export function parseShortcutConfig(config: unknown): { shortcuts: CommentShortcut[]; globalShortcut: KeyId; warnings: string[] } {
   const warnings: string[] = [];
   const parsed = (config ?? {}) as ShortcutConfigFile;
+  const globalShortcut = parseGlobalShortcut(parsed.globalShortcut, warnings);
 
   if (parsed.version != null && parsed.version !== 1) {
     warnings.push(`Unsupported slopchop shortcut config version: ${String(parsed.version)}. Expected version 1.`);
@@ -121,7 +157,7 @@ export function parseShortcutConfig(config: unknown): { shortcuts: CommentShortc
 
   if (parsed.shortcuts != null && !Array.isArray(parsed.shortcuts)) {
     warnings.push("Ignoring shortcuts because it is not an array.");
-    return { shortcuts, warnings };
+    return { shortcuts, globalShortcut, warnings };
   }
 
   for (const [index, rawEntry] of (parsed.shortcuts ?? []).entries()) {
@@ -143,7 +179,7 @@ export function parseShortcutConfig(config: unknown): { shortcuts: CommentShortc
     shortcuts.push(shortcut);
   }
 
-  return { shortcuts, warnings };
+  return { shortcuts, globalShortcut, warnings };
 }
 
 export function getShortcutsForSide(shortcuts: CommentShortcut[], side: Exclude<ShortcutSide, "both">): CommentShortcut[] {
@@ -157,17 +193,18 @@ export function getShortcutConfigPath(): string {
 export function loadCommentShortcuts(): LoadedCommentShortcuts {
   const path = getShortcutConfigPath();
   if (!existsSync(path)) {
-    return { shortcuts: BUILTIN_COMMENT_SHORTCUTS, warnings: [], path };
+    return { shortcuts: BUILTIN_COMMENT_SHORTCUTS, globalShortcut: DEFAULT_GLOBAL_SHORTCUT, warnings: [], path };
   }
 
   try {
     const config = JSON.parse(readFileSync(path, "utf8")) as unknown;
     const parsed = parseShortcutConfig(config);
-    return { shortcuts: parsed.shortcuts, warnings: parsed.warnings, path };
+    return { shortcuts: parsed.shortcuts, globalShortcut: parsed.globalShortcut, warnings: parsed.warnings, path };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
       shortcuts: BUILTIN_COMMENT_SHORTCUTS,
+      globalShortcut: DEFAULT_GLOBAL_SHORTCUT,
       warnings: [`Could not read shortcut config at ${path}: ${message}`],
       path,
     };

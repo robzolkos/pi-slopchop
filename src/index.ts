@@ -5,6 +5,7 @@ import { loadCommentShortcuts } from "./shortcuts.js";
 import { runReviewApp } from "./ui/review-app.js";
 
 export default function slopReviewExtension(pi: ExtensionAPI) {
+  const initialShortcutConfig = loadCommentShortcuts();
   let activeReview = false;
 
   async function openReview(ctx: ExtensionContext): Promise<void> {
@@ -59,7 +60,7 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
   pi.registerCommand("slopchop", reviewCommand);
   pi.registerCommand("diff", reviewCommand);
 
-  pi.registerShortcut("alt+s", {
+  pi.registerShortcut(initialShortcutConfig.globalShortcut, {
     description: "Open review UI",
     handler: async (ctx) => {
       await openReview(ctx);
