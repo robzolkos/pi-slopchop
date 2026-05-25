@@ -74,7 +74,7 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
   // rest of the session, so surface any config problems up front rather than
   // waiting for the first review to open.
   pi.on("session_start", async (event, ctx) => {
-    if (event.reason === "startup") {
+    if (event.reason === "startup" || event.reason === "reload") {
       notifyShortcutWarnings(ctx, initialShortcutConfig.warnings);
     }
   });

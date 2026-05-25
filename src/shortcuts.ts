@@ -101,6 +101,8 @@ function isValidKeyId(value: string): boolean {
   const modifiers = parts.slice(0, -1);
   if (modifiers.length !== new Set(modifiers).size) return false;
   if (!modifiers.every((modifier) => VALID_MODIFIERS.has(modifier))) return false;
+  // Escape is supported as an unmodified key.
+  if ((key === "escape" || key === "esc") && modifiers.length > 0) return false;
 
   return isPrintableKey(key) || SPECIAL_KEYS.has(key);
 }

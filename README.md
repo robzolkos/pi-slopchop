@@ -61,6 +61,8 @@ Or use the global shortcut, which defaults to:
 alt+s
 ```
 
+Configure the shortcut with `globalShortcut` in `~/.pi/agent/extensions/slopchop.json`, then restart Pi or run `/reload`.
+
 ### Basic flow
 
 1. Run `/slopchop` or `/diff`
@@ -277,7 +279,7 @@ Example:
 #### Fields
 
 - `version` — schema version, currently `1`
-- `globalShortcut` — global Pi shortcut that opens the review UI, defaults to `alt+s`. Must include a modifier when bound to a single character (e.g. `alt+s`, `ctrl+alt+r`); standalone special keys like `f5` are also allowed. Read once when the extension loads, so restart Pi or run `/reload` after changing it.
+- `globalShortcut` — global Pi shortcut that opens the review UI, defaults to `alt+s`. Use Pi key identifiers such as `alt+s`, `ctrl+alt+r`, `shift+f5`, or `f5`. Single printable characters require a modifier, so normal typing stays in the editor. Bare special keys such as `f5`, `home`, and `pageUp` are supported. Escape is supported as `escape` or `esc` without modifiers. The shortcut is registered when the extension loads; restart Pi or run `/reload` after changing it. If the configured shortcut is invalid, slopchop uses `alt+s` and shows a config warning.
 - `builtins.disable` — built-in shortcut ids to turn off
 - `shortcuts` — your custom shortcuts
 

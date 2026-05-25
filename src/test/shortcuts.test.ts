@@ -51,6 +51,13 @@ describe("comment shortcuts", () => {
     expect(parsed.globalShortcut).toBe("f5");
   });
 
+  it("rejects modified escape shortcuts because pi-tui only matches bare escape", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "ctrl+escape" });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("Ignoring globalShortcut");
+  });
+
   it("normalizes the configured global shortcut to lower case", () => {
     const parsed = parseShortcutConfig({ version: 1, globalShortcut: "  CTRL+ALT+R  " });
 
