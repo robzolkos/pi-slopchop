@@ -1,11 +1,68 @@
 import { describe, expect, it } from "vitest";
-import { BUILTIN_COMMENT_SHORTCUTS, getShortcutsForSide, parseShortcutConfig } from "../shortcuts.js";
+import { BUILTIN_COMMENT_SHORTCUTS, DEFAULT_GLOBAL_SHORTCUT, getShortcutsForSide, parseShortcutConfig } from "../shortcuts.js";
 
 describe("comment shortcuts", () => {
   it("loads builtins by default", () => {
     const parsed = parseShortcutConfig({ version: 1 });
     expect(parsed.warnings).toEqual([]);
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
     expect(parsed.shortcuts).toEqual(BUILTIN_COMMENT_SHORTCUTS);
+  });
+
+  it("loads a configured global shortcut", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "ctrl+alt+r" });
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.globalShortcut).toBe("ctrl+alt+r");
+  });
+
+  it("falls back to the default global shortcut when configured with an invalid value", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "not a shortcut" });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("Ignoring globalShortcut");
+  });
+
+  it("falls back to the default global shortcut for an empty string", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "   " });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("Ignoring globalShortcut");
+  });
+
+  it("falls back to the default global shortcut for a non-string value", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: 42 });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("Ignoring globalShortcut");
+  });
+
+  it("requires a modifier for a single-character global shortcut", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "s" });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("needs a modifier");
+  });
+
+  it("allows a standalone special key as the global shortcut", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "f5" });
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.globalShortcut).toBe("f5");
+  });
+
+  it("rejects modified escape shortcuts because pi-tui only matches bare escape", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "ctrl+escape" });
+
+    expect(parsed.globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(parsed.warnings[0]).toContain("Ignoring globalShortcut");
+  });
+
+  it("normalizes the configured global shortcut to lower case", () => {
+    const parsed = parseShortcutConfig({ version: 1, globalShortcut: "  CTRL+ALT+R  " });
+
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.globalShortcut).toBe("ctrl+alt+r");
   });
 
   it("allows disabling builtins and adding a custom shortcut", () => {
