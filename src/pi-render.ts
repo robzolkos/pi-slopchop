@@ -1,27 +1,4 @@
-import { existsSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-function resolveThemeModuleUrl(): string {
-  const start = path.dirname(fileURLToPath(import.meta.url));
-  let current = start;
-
-  for (let i = 0; i < 8; i += 1) {
-    const candidate = path.join(current, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "modes", "interactive", "theme", "theme.js");
-    if (existsSync(candidate)) return pathToFileURL(candidate).href;
-
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-
-  throw new Error("Could not resolve Pi theme module for slopchop rendering.");
-}
-
-const { getLanguageFromPath, highlightCode } = await import(resolveThemeModuleUrl()) as {
-  getLanguageFromPath: (filePath: string) => string | undefined;
-  highlightCode: (code: string, lang?: string) => string[];
-};
+import { getLanguageFromPath, highlightCode } from "@earendil-works/pi-coding-agent";
 
 export function detectPiLanguage(filePath: string): string | undefined {
   return getLanguageFromPath(filePath);
