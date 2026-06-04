@@ -231,7 +231,8 @@ export function getRelatedFileMarker(file: ReviewFile, activeFile: ReviewFile | 
   return null;
 }
 
-type Theme = Parameters<ExtensionContext["ui"]["custom"]>[0] extends (tui: any, theme: infer T, kb: any, done: any) => any ? T : never;
+export type ReviewAppTheme = Parameters<ExtensionContext["ui"]["custom"]>[0] extends (tui: any, theme: infer T, kb: any, done: any) => any ? T : never;
+type Theme = ReviewAppTheme;
 
 function repeat(char: string, count: number): string {
   return count <= 0 ? "" : char.repeat(count);
@@ -411,6 +412,105 @@ function renderOuterFrame(
   }
 
   return [top, ...body, bottom];
+}
+
+const FOOTER_ACTION_HINT = "Tab focus • / search • ? help/actions • s submit • Esc exit";
+
+const HELP_KEY_SECTIONS = [
+  {
+    title: "Core",
+    lines: [
+      "1/2/3 switch review scope",
+      "Tab / Shift+Tab cycle focus",
+      "/ search files • ? toggle help",
+      "w wrap lines • u toggle unchanged context",
+      "h hide/show comments • s submit",
+      "Esc exit review • Ctrl+C exit alias",
+    ],
+  },
+  {
+    title: "Navigation",
+    lines: [
+      "navigator: ↑↓/j/k files",
+      "Ctrl+d/u half-page • gg/G top/bottom",
+      "r related filter • Enter focus diff",
+    ],
+  },
+  {
+    title: "Diff actions",
+    lines: [
+      "diff: ↑↓/j/k lines",
+      "Shift+↑↓ extend range",
+      "Ctrl+d/u half-page • gg/G top/bottom",
+      "n/p next/previous hunk",
+      "t templates • o open in $EDITOR",
+      "f fix line • d/c discuss line",
+      "e edit • x delete • l file • a all",
+    ],
+  },
+  {
+    title: "Comments",
+    lines: [
+      "comments: ↑↓/j/k comments",
+      "Ctrl+d/u half-page • gg/G top/bottom",
+      "e/Enter edit • d delete",
+    ],
+  },
+  {
+    title: "Editor",
+    lines: [
+      "Tab toggle intent",
+      "Enter save • Shift+Enter newline",
+      "Esc cancel",
+    ],
+  },
+];
+
+function pushWrappedText(lines: string[], theme: Theme, text: string, width: number, color: "muted" | "dim" = "muted", prefix = ""): void {
+  const availableWidth = Math.max(1, width - visibleWidth(prefix));
+  const wrapped = wrapAnsiText(theme.fg(color, text), availableWidth, true);
+  for (const line of wrapped) {
+    lines.push(`${prefix}${line}`);
+  }
+}
+
+export function buildFooterLines(theme: Theme, promptStatus: string, frameInnerWidth: number): string[] {
+  return [
+    truncateToWidth(theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
+    truncateToWidth(theme.fg("dim", FOOTER_ACTION_HINT), frameInnerWidth, "…", false),
+  ];
+}
+
+export function buildHelpPanelLines(theme: Theme, width: number, activeShortcuts: CommentShortcut[], configPath: string): string[] {
+  const lines: string[] = [];
+  const contentWidth = Math.max(1, width - 2);
+
+  pushWrappedText(lines, theme, "? toggle help • Esc close", contentWidth, "muted");
+
+  for (const section of HELP_KEY_SECTIONS) {
+    lines.push("");
+    lines.push(theme.fg("warning", section.title));
+    for (const line of section.lines) {
+      pushWrappedText(lines, theme, line, contentWidth, "muted");
+    }
+  }
+
+  lines.push("");
+  lines.push(theme.fg("warning", "Template shortcuts"));
+  if (activeShortcuts.length === 0) {
+    pushWrappedText(lines, theme, "No active shortcuts for the current selection.", contentWidth, "dim");
+  } else {
+    for (const shortcut of activeShortcuts) {
+      const badge = getIntentBadge(theme, shortcut.intent);
+      pushWrappedText(lines, theme, `${shortcut.key} ${shortcut.label} ${badge}`, contentWidth, "muted");
+    }
+  }
+
+  lines.push("");
+  lines.push(theme.fg("warning", "Config"));
+  pushWrappedText(lines, theme, configPath, contentWidth, "muted");
+
+  return lines;
 }
 
 function sliceAnsiByColumn(line: string, startCol: number, length: number): string {
@@ -1716,35 +1816,7 @@ class ReviewApp {
   }
 
   private renderHelpPanel(width: number, height: number): string[] {
-    const lines: string[] = [];
-    const activeShortcuts = this.getAvailableShortcuts();
-
-    lines.push(this.theme.fg("muted", "? toggle help • Esc close"));
-    lines.push("");
-    lines.push(this.theme.fg("warning", "Keys"));
-    lines.push(this.theme.fg("muted", "global: 1/2/3 scope • Tab/Shift+Tab focus • / search • ? help • w wrap • u unchanged • h comments • s submit"));
-    lines.push(this.theme.fg("muted", "global: Esc exit review • Ctrl+C exit alias • drafts stay intact until you confirm discard"));
-    lines.push(this.theme.fg("muted", "navigator: ↑↓/j/k files • Ctrl+d/u half-page • gg/G top/bottom • r related • Enter diff"));
-    lines.push(this.theme.fg("muted", "diff: ↑↓/j/k lines • Shift+↑↓ range • Ctrl+d/u half-page • gg/G top/bottom • t templates • f fix • d/c discuss • e edit • x delete • o $EDITOR • l file • a all • n/p hunks"));
-    lines.push(this.theme.fg("muted", "comments: ↑↓/j/k comments • Ctrl+d/u half-page • gg/G top/bottom • e/Enter edit • d delete"));
-    lines.push("");
-    lines.push(this.theme.fg("warning", "Editor"));
-    lines.push(this.theme.fg("muted", "Tab toggle • Enter save • Shift+Enter newline • Esc cancel"));
-    lines.push("");
-    lines.push(this.theme.fg("warning", "Template shortcuts"));
-    if (activeShortcuts.length === 0) {
-      lines.push(this.theme.fg("dim", "No active shortcuts for the current selection."));
-    } else {
-      for (const shortcut of activeShortcuts) {
-        const badge = getIntentBadge(this.theme, shortcut.intent);
-        lines.push(`${this.theme.fg("accent", shortcut.key)} ${this.theme.fg("text", shortcut.label)} ${badge}`);
-      }
-    }
-    lines.push("");
-    lines.push(this.theme.fg("warning", "Config"));
-    lines.push(...wrapAnsiText(this.theme.fg("muted", getShortcutConfigPath()), Math.max(10, width - 4), true));
-
-    return renderBox("Help", width, height, this.theme, lines, true);
+    return renderBox("Help", width, height, this.theme, buildHelpPanelLines(this.theme, width, this.getAvailableShortcuts(), getShortcutConfigPath()), true);
   }
 
   private renderCancelConfirmation(): string[] {
@@ -1947,10 +2019,7 @@ class ReviewApp {
       }
     }
 
-    const footer = [
-      truncateToWidth(this.theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files, Ctrl+d/u half-page, gg/G top-bottom, r related filter • diff: ↑↓ lines, Shift+↑↓ range, Ctrl+d/u half-page, gg/G top-bottom, t templates, o open in $EDITOR, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: h hide/show, ↑↓ comments, Ctrl+d/u half-page, gg/G top-bottom, e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
-    ];
+    const footer = buildFooterLines(this.theme, promptStatus, frameInnerWidth);
 
     const rendered = renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
     if (!this.confirmCancel) return rendered;

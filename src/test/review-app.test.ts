@@ -1,7 +1,8 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import type { DiffReviewComment, ReviewFile, ReviewState } from "../types.js";
-import { buildDisplayRows, buildEditorLaunchCommand, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
+import { buildDisplayRows, buildEditorLaunchCommand, buildFooterLines, buildHelpPanelLines, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
 
 function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
   return {
@@ -200,5 +201,33 @@ describe("buildEditorLaunchCommand", () => {
 
   it("falls back to vi and clamps invalid line numbers", () => {
     expect(buildEditorLaunchCommand(" ", "/tmp/file.ts", 0)).toBe("vi +1 -- '/tmp/file.ts'");
+  });
+});
+
+const plainTheme = {
+  fg(_color: string, text: string) { return text; },
+  bg(_color: string, text: string) { return text; },
+};
+
+describe("action and shortcut help rendering", () => {
+  it("keeps the persistent footer concise and panel-scoped", () => {
+    const lines = buildFooterLines(plainTheme as any, "Tab focus • / search • ? help • 1/2/3 scopes • h hide comments • o open in $EDITOR • s submit • Esc exit", 80);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).not.toContain("navigator:");
+    expect(lines[1]).not.toContain("diff:");
+    expect(lines[1]).not.toContain("comments:");
+    expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
+  });
+
+  it("wraps full help text to the sidebar width", () => {
+    const lines = buildHelpPanelLines(plainTheme as any, 36, [
+      { id: "explain-added", key: "e", label: "explain", intent: "discuss", side: "added", text: "Explain what this code is doing." },
+    ], "/home/user/.pi/agent/extensions/slopchop.json");
+
+    expect(lines).toContain("Navigation");
+    expect(lines).toContain("Diff actions");
+    expect(lines.some((line) => line.includes("navigator: ↑↓/j/k files") && line.includes("diff:"))).toBe(false);
+    expect(lines.every((line) => visibleWidth(line) <= 34)).toBe(true);
   });
 });
