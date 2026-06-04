@@ -2,7 +2,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import type { DiffReviewComment, ReviewFile, ReviewState } from "../types.js";
-import { buildDisplayRows, buildEditorLaunchCommand, buildFooterLines, buildHelpPanelLines, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
+import { buildDisplayRows, buildEditorLaunchCommand, buildFooterLines, buildHelpPanelLines, formatFocusStatus, formatPaneTitle, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
 
 function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
   return {
@@ -208,6 +208,20 @@ const plainTheme = {
   fg(_color: string, text: string) { return text; },
   bg(_color: string, text: string) { return text; },
 };
+
+describe("focused panel feedback", () => {
+  it("marks the active panel title explicitly", () => {
+    expect(formatPaneTitle("Navigator", true)).toBe("▶ Navigator");
+    expect(formatPaneTitle("Diff (2 hunks)", true)).toBe("▶ Diff (2 hunks)");
+    expect(formatPaneTitle("Comments", false)).toBe("Comments");
+  });
+
+  it("describes the current focus in the status footer", () => {
+    expect(formatFocusStatus("navigator")).toBe("Focus: Navigator");
+    expect(formatFocusStatus("diff")).toBe("Focus: Diff");
+    expect(formatFocusStatus("comments")).toBe("Focus: Comments");
+  });
+});
 
 describe("action and shortcut help rendering", () => {
   it("keeps the persistent footer concise and panel-scoped", () => {
