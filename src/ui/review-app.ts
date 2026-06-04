@@ -357,10 +357,22 @@ export function shortenNavigatorPath(path: string, maxWidth: number): string {
   return truncateToWidth(baseName, safeWidth, "…", false);
 }
 
+export function formatPaneTitle(title: string, focused: boolean): string {
+  return focused ? `▶ ${title}` : title;
+}
+
+export function formatFocusStatus(focus: ReviewState["focus"]): string {
+  switch (focus) {
+    case "navigator": return "Focus: Navigator";
+    case "diff": return "Focus: Diff";
+    case "comments": return "Focus: Comments";
+  }
+}
+
 function renderBox(title: string, width: number, height: number, theme: Theme, lines: string[], focused = false): string[] {
   const innerWidth = Math.max(1, width - 2);
   const innerHeight = Math.max(1, height - 2);
-  const titleText = truncateToWidth(` ${title} `, Math.max(1, innerWidth - 2), "", false);
+  const titleText = truncateToWidth(` ${formatPaneTitle(title, focused)} `, Math.max(1, innerWidth - 2), "", false);
   const leftPad = Math.max(0, Math.floor((innerWidth - visibleWidth(titleText)) / 2));
   const rightPad = Math.max(0, innerWidth - visibleWidth(titleText) - leftPad);
   const borderColor = focused ? "accent" : "border";
@@ -1967,7 +1979,7 @@ class ReviewApp {
           ? `Search: ${this.searchBuffer}`
           : this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : `${layoutStatus}Tab focus • / search • t templates • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit • Esc exit • Ctrl+C exit`);
+            : `${formatFocusStatus(this.state.focus)} • ${layoutStatus}Tab focus • / search • t templates • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit • Esc exit • Ctrl+C exit`);
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
