@@ -2,7 +2,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import type { DiffReviewComment, ReviewFile, ReviewState } from "../types.js";
-import { buildDisplayRows, buildEditorLaunchCommand, buildFooterLines, buildHelpPanelLines, formatFocusStatus, formatPaneTitle, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
+import { buildDisplayRows, buildEditorLaunchCommand, buildFooterLines, buildHelpPanelLines, buildSideBySideDisplayRows, formatFocusStatus, formatPaneTitle, formatSelectedLineTargetLabel, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getSideBySidePairedLineTarget, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
 
 function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
   return {
@@ -65,6 +65,38 @@ describe("buildDisplayRows", () => {
       { kind: "removed", commentLineNumber: 2, commentSide: "deleted" },
       { kind: "context", commentLineNumber: 2, commentSide: "added" },
     ]);
+  });
+});
+
+describe("side-by-side diff helpers", () => {
+  it("pairs replacement rows into old and new cells", () => {
+    const diff = buildStructuredDiff(
+      ["alpha", "old value", "omega"].join("\n") + "\n",
+      ["alpha", "new value", "omega"].join("\n") + "\n",
+      3,
+    );
+
+    const rows = buildSideBySideDisplayRows(diff);
+    const replacement = rows.find((row) => row.kind === "change" && row.oldCell?.text === "old value");
+
+    expect(replacement?.oldCell).toMatchObject({ side: "deleted", lineNumber: 2, text: "old value" });
+    expect(replacement?.newCell).toMatchObject({ side: "added", lineNumber: 2, text: "new value" });
+  });
+
+  it("finds the paired side for replacement selections", () => {
+    const diff = buildStructuredDiff(
+      ["alpha", "old value", "omega"].join("\n") + "\n",
+      ["alpha", "new value", "omega"].join("\n") + "\n",
+      3,
+    );
+
+    expect(getSideBySidePairedLineTarget(diff, { side: "deleted", line: 2 })).toEqual({ side: "added", line: 2 });
+    expect(getSideBySidePairedLineTarget(diff, { side: "added", line: 2 })).toEqual({ side: "deleted", line: 2 });
+  });
+
+  it("describes the selected side and range", () => {
+    expect(formatSelectedLineTargetLabel({ side: "deleted", line: 4 })).toBe("selected deleted line 4");
+    expect(formatSelectedLineTargetLabel({ side: "added", line: 8, endLine: 10 })).toBe("selected added lines 8-10");
   });
 });
 
