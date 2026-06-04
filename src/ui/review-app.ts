@@ -480,12 +480,30 @@ const HELP_KEY_SECTIONS = [
   },
 ];
 
-function pushWrappedText(lines: string[], theme: Theme, text: string, width: number, color: "muted" | "dim" = "muted", prefix = ""): void {
+function pushWrappedAnsiText(lines: string[], text: string, width: number, prefix = ""): void {
   const availableWidth = Math.max(1, width - visibleWidth(prefix));
-  const wrapped = wrapAnsiText(theme.fg(color, text), availableWidth, true);
+  const wrapped = wrapAnsiText(text, availableWidth, true);
   for (const line of wrapped) {
     lines.push(`${prefix}${line}`);
   }
+}
+
+function pushWrappedText(lines: string[], theme: Theme, text: string, width: number, color: "muted" | "dim" = "muted", prefix = ""): void {
+  pushWrappedAnsiText(lines, theme.fg(color, text), width, prefix);
+}
+
+export function buildCommentPanelTextLines(theme: Theme, width: number, text: string, color: "muted" | "dim" = "muted", prefix = "", maxLines?: number): string[] {
+  const lines: string[] = [];
+  const contentWidth = Math.max(1, width - 2);
+  pushWrappedText(lines, theme, text, contentWidth, color, prefix);
+  return maxLines == null ? lines : lines.slice(0, Math.max(0, maxLines));
+}
+
+export function buildCommentPanelEmptyStateLines(theme: Theme, width: number): string[] {
+  return [
+    ...buildCommentPanelTextLines(theme, width, "No comments yet.", "dim"),
+    ...buildCommentPanelTextLines(theme, width, "Use f/d/c for a line or range, l for file, or a for all.", "dim"),
+  ];
 }
 
 export function buildFooterLines(theme: Theme, promptStatus: string, frameInnerWidth: number): string[] {
@@ -503,14 +521,14 @@ export function buildHelpPanelLines(theme: Theme, width: number, activeShortcuts
 
   for (const section of HELP_KEY_SECTIONS) {
     lines.push("");
-    lines.push(theme.fg("warning", section.title));
+    lines.push(truncateToWidth(theme.fg("warning", section.title), contentWidth, "", false));
     for (const line of section.lines) {
       pushWrappedText(lines, theme, line, contentWidth, "muted");
     }
   }
 
   lines.push("");
-  lines.push(theme.fg("warning", "Template shortcuts"));
+  lines.push(truncateToWidth(theme.fg("warning", "Template shortcuts"), contentWidth, "", false));
   if (activeShortcuts.length === 0) {
     pushWrappedText(lines, theme, "No active shortcuts for the current selection.", contentWidth, "dim");
   } else {
@@ -521,7 +539,7 @@ export function buildHelpPanelLines(theme: Theme, width: number, activeShortcuts
   }
 
   lines.push("");
-  lines.push(theme.fg("warning", "Config"));
+  lines.push(truncateToWidth(theme.fg("warning", "Config"), contentWidth, "", false));
   pushWrappedText(lines, theme, configPath, contentWidth, "muted");
 
   return lines;
@@ -2041,14 +2059,15 @@ class ReviewApp {
   private renderComments(width: number, height: number): string[] {
     const file = this.activeFile();
     const lines: string[] = [];
+    const contentWidth = Math.max(1, width - 2);
     const fileId = file?.id ?? null;
     const items = getCommentPanelItems(this.state, fileId, this.state.activeScope);
     this.state = moveSelectedCommentIndex(this.state, items.length, 0);
 
     if (this.shortcutMode) {
       const shortcuts = this.getAvailableShortcuts();
-      lines.push(this.theme.fg("muted", "Press a key to apply a templated comment."));
-      lines.push(this.theme.fg("dim", "Esc cancel"));
+      pushWrappedText(lines, this.theme, "Press a key to apply a templated comment.", contentWidth, "muted");
+      pushWrappedText(lines, this.theme, "Esc cancel", contentWidth, "dim");
       lines.push("");
 
       if (shortcuts.length === 0) {
@@ -2065,13 +2084,13 @@ class ReviewApp {
         const groupShortcuts = shortcuts.filter((shortcut) => shortcut.intent === group.intent);
         if (groupShortcuts.length === 0) return;
         if (groupIndex > 0 && lines[lines.length - 1] !== "") lines.push("");
-        lines.push(group.header);
+        lines.push(truncateToWidth(group.header, contentWidth, "", false));
         lines.push("");
 
         for (const shortcut of groupShortcuts) {
-          lines.push(`${this.theme.fg("accent", shortcut.key)} ${this.theme.fg("text", shortcut.label)}`);
-          for (const line of wrapAnsiText(this.theme.fg("muted", shortcut.text), Math.max(10, width - 4), true).slice(0, 3)) {
-            lines.push(`  ${line}`);
+          pushWrappedAnsiText(lines, `${this.theme.fg("accent", shortcut.key)} ${this.theme.fg("text", shortcut.label)}`, contentWidth);
+          for (const line of buildCommentPanelTextLines(this.theme, width, shortcut.text, "muted", "  ", 3)) {
+            lines.push(line);
           }
           lines.push("");
         }
@@ -2117,8 +2136,7 @@ class ReviewApp {
     }
 
     if (items.length === 0) {
-      lines.push(this.theme.fg("dim", "No comments yet."));
-      lines.push(this.theme.fg("dim", "Use f/d/c for a line or range, l for file, or a for all."));
+      lines.push(...buildCommentPanelEmptyStateLines(this.theme, width));
       return renderBox("Comments", width, height, this.theme, lines, this.state.focus === "comments");
     }
 
@@ -2133,13 +2151,13 @@ class ReviewApp {
       const selected = absoluteIndex === activeIndex;
       const prefix = selected ? this.theme.fg("accent", "› ") : "  ";
       const label = getPanelItemLabel(this.theme, item);
-      lines.push(prefix + (selected ? this.theme.fg("accent", label) : label));
+      pushWrappedAnsiText(lines, selected ? this.theme.fg("accent", label) : label, contentWidth, prefix);
       const body = item.kind === "all" ? item.body : item.comment.body;
-      for (const line of wrapAnsiText(this.theme.fg("muted", body), Math.max(10, width - 4), true).slice(0, 3)) {
-        lines.push(`   ${line}`);
+      for (const line of buildCommentPanelTextLines(this.theme, width, body, "muted", "   ", 3)) {
+        lines.push(line);
       }
       if (item.kind === "comment" && item.comment.side !== "file") {
-        lines.push(this.theme.fg("dim", `   ${getScopeDisplayPath(file, this.state.activeScope)}:${formatLineRangeLabel(item.comment.startLine ?? 0, item.comment.endLine ?? item.comment.startLine ?? 0)} (${item.comment.side})`));
+        pushWrappedText(lines, this.theme, `${getScopeDisplayPath(file, this.state.activeScope)}:${formatLineRangeLabel(item.comment.startLine ?? 0, item.comment.endLine ?? item.comment.startLine ?? 0)} (${item.comment.side})`, contentWidth, "dim", "   ");
       }
       lines.push("");
     }
