@@ -426,7 +426,7 @@ function renderOuterFrame(
   return [top, ...body, bottom];
 }
 
-const FOOTER_ACTION_HINT = "Tab focus • / search • ? help/actions • s submit • Esc exit";
+const FOOTER_ACTION_HINT = "Tab focus • / search • ? help/actions • v diff view • s submit • Esc exit";
 
 const HELP_KEY_SECTIONS = [
   {
@@ -435,7 +435,8 @@ const HELP_KEY_SECTIONS = [
       "1/2/3 switch review scope",
       "Tab / Shift+Tab cycle focus",
       "/ search files • ? toggle help",
-      "w wrap lines • u toggle unchanged context",
+      "w wrap lines • v toggle diff view",
+      "u toggle unchanged context",
       "h hide/show comments • s submit",
       "Esc exit review • Ctrl+C exit alias",
     ],
@@ -453,6 +454,7 @@ const HELP_KEY_SECTIONS = [
     lines: [
       "diff: ↑↓/j/k lines",
       "Shift+↑↓ extend range",
+      "←/→ choose side in side-by-side view",
       "Ctrl+d/u half-page • gg/G top/bottom",
       "n/p next/previous hunk",
       "t templates • o open in $EDITOR",
@@ -604,6 +606,20 @@ export type DisplayRow =
   | { kind: "gap"; displayLineNumber: null; commentLineNumber: null; commentSide: null; sign: " "; codeText: string; pairedText?: undefined }
   | { kind: "context" | "added" | "removed"; displayLineNumber: number | null; commentLineNumber: number | null; commentSide: ReviewLineTarget["side"] | null; sign: " " | "+" | "-"; codeText: string; pairedText?: string };
 
+export interface SideBySideCell {
+  side: ReviewLineTarget["side"];
+  lineNumber: number;
+  sign: " " | "+" | "-";
+  text: string;
+  tone: DiffTone;
+}
+
+export type SideBySideDisplayRow =
+  | { kind: "gap"; label: string; oldCell: null; newCell: null }
+  | { kind: "context" | "change"; oldCell: SideBySideCell | null; newCell: SideBySideCell | null };
+
+export type DiffViewMode = "unified" | "side-by-side";
+
 type DiffTone = "added" | "removed" | "context";
 
 function applyLineBackground(theme: Theme, text: string, tone: DiffTone): string {
@@ -669,6 +685,73 @@ export function buildDisplayRows(diff: StructuredDiff): DisplayRow[] {
   return rows;
 }
 
+export function buildSideBySideDisplayRows(diff: StructuredDiff): SideBySideDisplayRow[] {
+  const rows: SideBySideDisplayRow[] = [];
+
+  for (const item of diff.visibleItems) {
+    if (item.type === "gap") {
+      rows.push({ kind: "gap", label: item.label, oldCell: null, newCell: null });
+      continue;
+    }
+
+    const row = item.row;
+    if (row.kind === "equal") {
+      rows.push({
+        kind: "context",
+        oldCell: row.oldLineNumber == null ? null : { side: "deleted", lineNumber: row.oldLineNumber, sign: " ", text: row.oldText, tone: "context" },
+        newCell: row.newLineNumber == null ? null : { side: "added", lineNumber: row.newLineNumber, sign: " ", text: row.newText, tone: "context" },
+      });
+      continue;
+    }
+
+    if (row.kind === "delete") {
+      rows.push({
+        kind: "change",
+        oldCell: row.oldLineNumber == null ? null : { side: "deleted", lineNumber: row.oldLineNumber, sign: "-", text: row.oldText, tone: "removed" },
+        newCell: null,
+      });
+      continue;
+    }
+
+    if (row.kind === "insert") {
+      rows.push({
+        kind: "change",
+        oldCell: null,
+        newCell: row.newLineNumber == null ? null : { side: "added", lineNumber: row.newLineNumber, sign: "+", text: row.newText, tone: "added" },
+      });
+      continue;
+    }
+
+    rows.push({
+      kind: "change",
+      oldCell: row.oldLineNumber == null ? null : { side: "deleted", lineNumber: row.oldLineNumber, sign: "-", text: row.oldText, tone: "removed" },
+      newCell: row.newLineNumber == null ? null : { side: "added", lineNumber: row.newLineNumber, sign: "+", text: row.newText, tone: "added" },
+    });
+  }
+
+  return rows;
+}
+
+export function getSideBySidePairedLineTarget(diff: StructuredDiff, target: ReviewLineTarget): ReviewLineTarget | null {
+  for (const row of diff.rows) {
+    if (row.kind !== "replace" || row.oldLineNumber == null || row.newLineNumber == null) continue;
+    if (target.side === "deleted" && target.line === row.oldLineNumber) return { side: "added", line: row.newLineNumber };
+    if (target.side === "added" && target.line === row.newLineNumber) return { side: "deleted", line: row.oldLineNumber };
+  }
+  return null;
+}
+
+export function formatSelectedLineTargetLabel(target: ReviewLineTarget | null): string {
+  if (target == null) return "no line selected";
+  const range = getLineTargetRange(target);
+  const noun = range.startLine === range.endLine ? "line" : "lines";
+  return `selected ${target.side} ${noun} ${formatLineRangeLabel(range.startLine, range.endLine)}`;
+}
+
+export function formatDiffViewModeLabel(mode: DiffViewMode): string {
+  return mode === "side-by-side" ? "side-by-side" : "unified";
+}
+
 function getCommentableLineTargets(diff: StructuredDiff): ReviewLineTarget[] {
   const seen = new Set<string>();
   const targets: ReviewLineTarget[] = [];
@@ -693,6 +776,7 @@ class ReviewApp {
   private searchBuffer = "";
   private shortcutMode = false;
   private helpMode = false;
+  private diffViewMode: DiffViewMode = "unified";
   private confirmCancel = false;
   private commentsHidden = false;
   private externalEditorOpen = false;
@@ -1306,6 +1390,26 @@ class ReviewApp {
     this.requestRender();
   }
 
+  private toggleDiffViewMode(): void {
+    this.diffViewMode = this.diffViewMode === "unified" ? "side-by-side" : "unified";
+    this.renderedDiffLineCache.clear();
+    this.requestRender();
+  }
+
+  private selectSideBySidePair(side: ReviewLineTarget["side"]): boolean {
+    if (this.diffViewMode !== "side-by-side" || this.state.focus !== "diff") return false;
+    const file = this.activeFile();
+    const diff = this.getDisplayDiff(file?.id ?? null, this.state.activeScope);
+    const current = getSelectedLineTarget(this.state, file?.id ?? null, this.state.activeScope);
+    if (file == null || diff == null || current == null || current.side === side) return false;
+
+    const paired = getSideBySidePairedLineTarget(diff, current);
+    if (paired == null || paired.side !== side) return false;
+    this.state = setSelectedLineTarget(this.state, file.id, this.state.activeScope, paired);
+    this.requestRender();
+    return true;
+  }
+
   private toggleCommentsPane(): void {
     this.commentsHidden = !this.commentsHidden;
     if (this.commentsHidden) this.helpMode = false;
@@ -1575,6 +1679,7 @@ class ReviewApp {
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) { this.requestCancel(); return; }
     if (data === "h") { this.toggleCommentsPane(); return; }
     if (data === "w") { this.state = setWrapLines(this.state, !this.state.wrapLines); this.requestRender(); return; }
+    if (data === "v") { this.toggleDiffViewMode(); return; }
     if (data === "u") { this.state = toggleHideUnchanged(this.state); this.ensureLineSelection(); this.requestRender(); return; }
     if (data === "s") { this.submit(); return; }
     if (data === "l") { this.editFileComment(); return; }
@@ -1632,6 +1737,12 @@ class ReviewApp {
         if (matchesKey(data, Key.up) || data === "k") {
           this.moveDiffSelection(-1);
           return;
+        }
+        if (matchesKey(data, Key.left)) {
+          if (this.selectSideBySidePair("deleted")) return;
+        }
+        if (matchesKey(data, Key.right)) {
+          if (this.selectSideBySidePair("added")) return;
         }
         if (matchesKey(data, Key.ctrl("d"))) {
           this.moveDiffSelection(getHalfPageStep(this.diffPageSize));
@@ -1742,6 +1853,79 @@ class ReviewApp {
     return renderBox("Navigator", width, height, this.theme, lines, this.state.focus === "navigator");
   }
 
+  private renderSideBySideCellLines(cell: SideBySideCell | null, width: number, language: string | undefined, selected: boolean, fileId: string): string[] {
+    if (cell == null) return [" ".repeat(Math.max(1, width))];
+
+    const lineComment = getLineComment(this.state, fileId, this.state.activeScope, cell.side, cell.lineNumber);
+    const lineLabel = String(cell.lineNumber).padStart(4, " ");
+    const gutterLine = this.theme.fg("borderMuted", lineLabel);
+    const gutterSign = cell.sign === "+"
+      ? this.theme.fg("success", cell.sign)
+      : cell.sign === "-"
+        ? this.theme.fg("error", cell.sign)
+        : this.theme.fg("toolDiffContext", cell.sign);
+    const commentIndicator = lineComment == null
+      ? " "
+      : lineComment.intent === "fix"
+        ? this.theme.fg("success", "●")
+        : this.theme.fg("warning", "◆");
+    const highlightedCode = this.getCachedHighlightedCode(cell.tone, cell.text, language);
+    const contentText = `${gutterLine} ${gutterSign} ${commentIndicator} ${highlightedCode}`;
+
+    return wrapAnsiText(contentText, Math.max(1, width), this.state.wrapLines).map((line) => {
+      const paddedLine = padLine(line, Math.max(1, width));
+      if (selected) return this.theme.bg("selectedBg", paddedLine);
+      if (cell.tone === "added" || cell.tone === "removed") return applyLineBackground(this.theme, paddedLine, cell.tone);
+      return paddedLine;
+    });
+  }
+
+  private renderSideBySideDiff(diff: StructuredDiff, width: number, fileId: string, language: string | undefined, selectedTarget: ReviewLineTarget | null): { lines: string[]; selectedIndex: number } {
+    const innerWidth = Math.max(1, width - 2);
+    const separator = this.theme.fg("borderMuted", " │ ");
+    const separatorWidth = visibleWidth(separator);
+    const oldWidth = Math.max(8, Math.floor((innerWidth - separatorWidth) / 2));
+    const newWidth = Math.max(8, innerWidth - separatorWidth - oldWidth);
+    const selectedRange = selectedTarget == null ? null : getLineTargetRange(selectedTarget);
+    const rows = buildSideBySideDisplayRows(diff);
+    const lines: string[] = [];
+    let selectedIndex = 0;
+
+    const oldHeaderActive = selectedTarget?.side === "deleted";
+    const newHeaderActive = selectedTarget?.side === "added";
+    lines.push(`${padLine(this.theme.fg(oldHeaderActive ? "accent" : "muted", "Deleted / Old"), oldWidth)}${separator}${padLine(this.theme.fg(newHeaderActive ? "accent" : "muted", "Added / New"), newWidth)}`);
+
+    for (const row of rows) {
+      if (row.kind === "gap") {
+        lines.push(this.theme.fg("muted", centerText(row.label, innerWidth)));
+        continue;
+      }
+
+      const oldSelected = row.oldCell != null
+        && selectedTarget?.side === row.oldCell.side
+        && selectedRange != null
+        && selectedRange.startLine <= row.oldCell.lineNumber
+        && row.oldCell.lineNumber <= selectedRange.endLine;
+      const newSelected = row.newCell != null
+        && selectedTarget?.side === row.newCell.side
+        && selectedRange != null
+        && selectedRange.startLine <= row.newCell.lineNumber
+        && row.newCell.lineNumber <= selectedRange.endLine;
+      const oldCurrent = row.oldCell != null && selectedTarget?.side === row.oldCell.side && selectedTarget.line === row.oldCell.lineNumber;
+      const newCurrent = row.newCell != null && selectedTarget?.side === row.newCell.side && selectedTarget.line === row.newCell.lineNumber;
+      const oldLines = this.renderSideBySideCellLines(row.oldCell, oldWidth, language, oldSelected, fileId);
+      const newLines = this.renderSideBySideCellLines(row.newCell, newWidth, language, newSelected, fileId);
+      const rowStart = lines.length;
+      const rowHeight = Math.max(oldLines.length, newLines.length);
+      for (let index = 0; index < rowHeight; index += 1) {
+        lines.push(`${oldLines[index] ?? " ".repeat(oldWidth)}${separator}${newLines[index] ?? " ".repeat(newWidth)}`);
+      }
+      if (oldCurrent || newCurrent) selectedIndex = rowStart;
+    }
+
+    return { lines, selectedIndex };
+  }
+
   private renderDiff(width: number, height: number): string[] {
     const file = this.activeFile();
     const lines: string[] = [];
@@ -1752,7 +1936,7 @@ class ReviewApp {
 
     const entry = this.getEntry(file.id, this.state.activeScope);
     lines.push(this.theme.fg("muted", getScopeDisplayPath(file, this.state.activeScope)));
-    lines.push(this.theme.fg("dim", `${formatScopeLabel(this.state.activeScope)} • wrap ${this.state.wrapLines ? "on" : "off"}${this.state.activeScope === "all-files" ? "" : ` • unchanged ${this.state.hideUnchanged ? "hidden" : "shown"}`}`));
+    lines.push(this.theme.fg("dim", `${formatScopeLabel(this.state.activeScope)} • view ${formatDiffViewModeLabel(this.diffViewMode)} • wrap ${this.state.wrapLines ? "on" : "off"}${this.state.activeScope === "all-files" ? "" : ` • unchanged ${this.state.hideUnchanged ? "hidden" : "shown"}`}`));
     lines.push("");
 
     if (entry == null || entry.status === "loading") {
@@ -1770,11 +1954,19 @@ class ReviewApp {
     const language = detectPiLanguage(file.path);
     this.state = clampSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets);
     const selectedTarget = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
-    const displayRows = buildDisplayRows(diff);
-    const rendered: string[] = [];
+    lines[1] = this.theme.fg("dim", `${formatScopeLabel(this.state.activeScope)} • view ${formatDiffViewModeLabel(this.diffViewMode)} • ${formatSelectedLineTargetLabel(selectedTarget)} • wrap ${this.state.wrapLines ? "on" : "off"}${this.state.activeScope === "all-files" ? "" : ` • unchanged ${this.state.hideUnchanged ? "hidden" : "shown"}`}`);
+    let rendered: string[];
     let selectedIndex = 0;
 
-    for (const row of displayRows) {
+    if (this.diffViewMode === "side-by-side") {
+      const sideBySide = this.renderSideBySideDiff(diff, width, file.id, language, selectedTarget);
+      rendered = sideBySide.lines;
+      selectedIndex = sideBySide.selectedIndex;
+    } else {
+      const displayRows = buildDisplayRows(diff);
+      rendered = [];
+
+      for (const row of displayRows) {
       const selectedRange = selectedTarget == null ? null : getLineTargetRange(selectedTarget);
       const selectedSide = selectedTarget?.side ?? null;
       const isCurrentTarget = row.commentLineNumber != null
@@ -1814,8 +2006,9 @@ class ReviewApp {
       }
 
       const renderedLines = this.getCachedRenderedDiffLines(width, this.state.wrapLines, row.kind, tone, contentText, isSelected);
-      if (isCurrentTarget) selectedIndex = rendered.length;
-      rendered.push(...renderedLines);
+        if (isCurrentTarget) selectedIndex = rendered.length;
+        rendered.push(...renderedLines);
+      }
     }
 
     const maxBody = Math.max(1, height - 5);
@@ -1979,7 +2172,7 @@ class ReviewApp {
           ? `Search: ${this.searchBuffer}`
           : this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : `${formatFocusStatus(this.state.focus)} • ${layoutStatus}Tab focus • / search • t templates • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit • Esc exit • Ctrl+C exit`);
+            : `${formatFocusStatus(this.state.focus)} • ${layoutStatus}Tab focus • / search • t templates • v diff view • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit • Esc exit • Ctrl+C exit`);
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
