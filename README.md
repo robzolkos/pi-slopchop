@@ -21,6 +21,7 @@ It supports three review scopes:
 Inside the review UI you can:
 
 - move through files and hunks quickly
+- review changes in unified or side-by-side diff view
 - annotate **added** and **deleted** lines, including multiline ranges on one diff side
 - leave **file-level** annotations
 - leave a **whole-change** note
@@ -78,7 +79,7 @@ Configure the shortcut with `globalShortcut` in `~/.pi/agent/extensions/slopchop
    - otherwise `all files` as a current-file fallback
 
    In the branch-level `all files` scope, files are ordered for review priority: changed files referenced by more other changed files come first, then modified/renamed before added before deleted, then source files before tests/docs/changesets, then path order. The navigator can filter to files related to the active file with `r`. In related mode, `→` means the active file references that file, `←` means that file references the active file, and `↔` means both. Press `r` again to return to all files.
-3. Move to the file and line you care about
+3. Move to the file and line you care about; press `v` when you want side-by-side diff view
 4. Add annotations:
    - `f` for a line annotation with `FIX` preselected
    - `d` or `c` for a line annotation with `DISCUSS` preselected
@@ -174,6 +175,7 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `/` — search files in the navigator
 - `?` — toggle help in the right sidebar
 - `w` — toggle wrapping
+- `v` — toggle unified / side-by-side diff view
 - `u` — toggle unchanged context in diff scopes
 - `h` — hide/show the comments pane
 - `s` — insert the generated prompt into the editor
@@ -193,6 +195,7 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 
 - `↑↓` or `j/k` — move between selectable added/deleted lines
 - `Shift+↑↓` — extend the selection into a multiline range on the current side
+- `← / →` — choose the old/deleted or new/added side on replacement rows in side-by-side view
 - `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
 - `gg / G` — jump to the top / bottom
 - `n / p` — next / previous hunk
@@ -206,6 +209,8 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `t` — open template shortcut mode for the selected line
 
 Opening a source location in `$EDITOR` returns you to the review UI when the editor exits and keeps your draft feedback available for submission.
+
+Side-by-side diff view keeps review in one Diff panel. The left column shows deleted/old lines, the right column shows added/new lines, and replacement rows align old and new text on the same visual row. The active side is shown with the selected cell highlight, the active column header, and the selected-side status text. Line comments attach to the selected side and line number.
 
 Line comment markers in the diff gutter:
 
