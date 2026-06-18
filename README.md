@@ -28,6 +28,7 @@ Inside the review UI you can:
 - mark feedback as either:
   - `FIX` — the agent should change something
   - `DISCUSS` — the agent should explain, justify, or propose, without editing code just to satisfy the comment
+- drill into changed git submodules and review the exact nested commit range
 - insert the resulting review prompt into Pi’s editor
 
 The review UI does **not** auto-send the prompt. It stages the next message for you.
@@ -79,6 +80,8 @@ Configure the shortcut with `globalShortcut` in `~/.pi/agent/extensions/slopchop
    - otherwise `all files` as a current-file fallback
 
    In the branch-level `all files` scope, files are ordered for review priority: changed files referenced by more other changed files come first, then modified/renamed before added before deleted, then source files before tests/docs/changesets, then path order. The navigator can filter to files related to the active file with `r`. In related mode, `→` means the active file references that file, `←` means that file references the active file, and `↔` means both. Press `r` again to return to all files.
+
+   Changed submodules appear as normal review rows with a `↗` marker. Press `Enter` or `→` to review the exact nested commit range, and press `b` to return to the parent review. File-level comments on the parent submodule row are included in the final prompt.
 3. Move to the file and line you care about; press `v` when you want side-by-side diff view
 4. Add annotations:
    - `f` for a line annotation with `FIX` preselected
@@ -189,7 +192,8 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `gg / G` — jump to the top / bottom
 - `r` — toggle related-files filter in `all files` scope
 - file rows show change counts as `+added -deleted`
-- `Enter` — move focus to diff
+- `Enter` — move focus to diff, or open the selected changed submodule
+- `→` — open the selected changed submodule when available
 
 #### Diff
 
@@ -199,6 +203,8 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
 - `gg / G` — jump to the top / bottom
 - `n / p` — next / previous hunk
+- `Enter` / `→` — open the selected changed submodule when available
+- `b` — return to the parent review when inside a submodule
 - `o` — open the selected source location in `$EDITOR`, then return to the review UI when the editor exits
 - `f` — line comment, default `FIX`
 - `d` or `c` — line comment, default `DISCUSS`

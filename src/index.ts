@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getReviewWindowData, loadReviewFileContents } from "./git.js";
+import { getReviewWindowData, getSubmoduleReviewWindowData, loadReviewFileContents } from "./git.js";
 import { composeReviewPrompt } from "./prompt.js";
 import { loadCommentShortcuts } from "./shortcuts.js";
+import { hasExactSubmoduleRange } from "./types.js";
 import { runReviewApp } from "./ui/review-app.js";
 
 export default function slopReviewExtension(pi: ExtensionAPI) {
@@ -30,10 +31,17 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
 
       notifyShortcutWarnings(ctx, shortcutConfig.warnings);
 
-      const result = await runReviewApp(ctx, {
+      const { result, files: submittedFiles } = await runReviewApp(ctx, {
         files,
         repoRoot,
-        loadFileContents: (file, scope) => loadReviewFileContents(pi, repoRoot, file, scope),
+        loadFileContents: (activeRepoRoot, file, scope) => loadReviewFileContents(pi, activeRepoRoot, file, scope),
+        loadSubmoduleReviewData: (submodule) => {
+          if (hasExactSubmoduleRange(submodule)) {
+            return getSubmoduleReviewWindowData(pi, submodule.repoRoot, submodule.oldSha, submodule.newSha);
+          }
+
+          return getReviewWindowData(pi, submodule.repoRoot);
+        },
         commentShortcuts: shortcutConfig.shortcuts,
       });
 
@@ -42,7 +50,7 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const prompt = composeReviewPrompt(files, result);
+      const prompt = composeReviewPrompt(submittedFiles, result);
       ctx.ui.setEditorText(prompt);
       ctx.ui.notify("Inserted review feedback into the editor.", "info");
     } catch (error) {

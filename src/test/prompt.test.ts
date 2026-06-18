@@ -205,4 +205,42 @@ describe("composeReviewPrompt", () => {
     ].join("\n"));
     expect(prompt).not.toContain("DISCUSS items");
   });
+
+  it("keeps nested submodule path prefixes in generated locations", () => {
+    const prompt = composeReviewPrompt([
+      ...files,
+      {
+        ...files[0]!,
+        id: "nested",
+        path: "src/nested.ts",
+        pathPrefix: "packages/app",
+        allFiles: {
+          status: "modified",
+          oldPath: "src/nested.ts",
+          newPath: "src/nested.ts",
+          displayPath: "src/nested.ts",
+          hasOriginal: true,
+          hasModified: true,
+        },
+      },
+    ], {
+      type: "submit",
+      allComment: "",
+      allIntent: "fix",
+      comments: [
+        {
+          id: "nested-line",
+          fileId: "nested",
+          scope: "all-files",
+          side: "added",
+          intent: "fix",
+          startLine: 8,
+          endLine: 9,
+          body: "Tighten this block.",
+        },
+      ],
+    });
+
+    expect(prompt).toContain("1. packages/app/src/nested.ts:8-9");
+  });
 });
