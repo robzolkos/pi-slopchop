@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { extname, join, posix } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ChangeStatus, ReviewFile, ReviewFileComparison, ReviewFileContents, ReviewScope } from "./types.js";
+import type { ChangeStatus, ReviewFile, ReviewFileComparison, ReviewFileContents, ReviewScope, ReviewSubmoduleInfo } from "./types.js";
 
 export interface ChangedPath {
   status: ChangeStatus;
@@ -27,6 +27,12 @@ interface ReviewFileSeed {
   allFilesReferenceCount: number;
   allFilesOutgoingReferences: string[];
   allFilesIncomingReferences: string[];
+  submodule?: ReviewSubmoduleInfo;
+}
+
+interface GitSubmodule {
+  path: string;
+  repoRoot: string;
 }
 
 async function runGit(pi: ExtensionAPI, repoRoot: string, args: string[]): Promise<string> {
@@ -215,6 +221,7 @@ function createReviewFile(seed: ReviewFileSeed): ReviewFile {
     allFilesReferenceCount: seed.allFilesReferenceCount,
     allFilesOutgoingReferences: seed.allFilesOutgoingReferences,
     allFilesIncomingReferences: seed.allFilesIncomingReferences,
+    submodule: seed.submodule,
   };
 }
 
@@ -287,6 +294,52 @@ export function isReviewableFilePath(path: string): boolean {
 
 function normalizeGitPath(path: string): string {
   return posix.normalize(path).replace(/^\.\//, "");
+}
+
+export function parseGitmodulesPaths(output: string): string[] {
+  const paths: string[] = [];
+
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+
+    const separatorIndex = trimmed.indexOf(" ");
+    if (separatorIndex < 0) continue;
+
+    const path = normalizeGitPath(trimmed.slice(separatorIndex + 1).trim());
+    if (path.length === 0) continue;
+    if (!paths.includes(path)) paths.push(path);
+  }
+
+  return paths;
+}
+
+async function getNestedRepoRoot(pi: ExtensionAPI, cwd: string): Promise<string | null> {
+  const result = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd });
+  if (result.code !== 0) return null;
+  const repoRoot = result.stdout.trim();
+  return repoRoot.length > 0 ? repoRoot : null;
+}
+
+async function getSubmodules(pi: ExtensionAPI, repoRoot: string): Promise<GitSubmodule[]> {
+  const output = await runGitAllowFailure(pi, repoRoot, [
+    "config",
+    "--file",
+    ".gitmodules",
+    "--get-regexp",
+    "^submodule\\..*\\.path$",
+  ]);
+  if (output.trim().length === 0) return [];
+
+  // Only discover drillable submodule roots here; nested review loading stays lazy.
+  const submodules: GitSubmodule[] = [];
+  for (const path of parseGitmodulesPaths(output)) {
+    const nestedRepoRoot = await getNestedRepoRoot(pi, join(repoRoot, path));
+    if (nestedRepoRoot == null) continue;
+    submodules.push({ path, repoRoot: nestedRepoRoot });
+  }
+
+  return submodules;
 }
 
 function getChangeKey(change: ChangedPath): string {
@@ -493,6 +546,7 @@ export async function getReviewWindowData(pi: ExtensionAPI, cwd: string): Promis
     branchContentsByPath.set(normalizeGitPath(change.newPath), await getWorkingTreeContent(repoRoot, change.newPath));
   }));
   const branchReferenceGraph = getChangedFileReferenceGraph(branchChanges, branchContentsByPath);
+  const submodules = await getSubmodules(pi, repoRoot);
 
   const seeds = new Map<string, ReviewFileSeed>();
 
@@ -528,6 +582,14 @@ export async function getReviewWindowData(pi: ExtensionAPI, cwd: string): Promis
       seed.inAllFiles = true;
       seeds.set(path, seed);
     }
+  }
+
+  for (const submodule of submodules) {
+    const seed = seeds.get(submodule.path);
+    if (seed == null) continue;
+
+    // Mark an already-reviewable parent entry as drillable.
+    seed.submodule = { repoRoot: submodule.repoRoot };
   }
 
   const files = [...seeds.values()].map(createReviewFile).sort(compareReviewFiles);

@@ -79,7 +79,7 @@ Configure the shortcut with `globalShortcut` in `~/.pi/agent/extensions/slopchop
    - otherwise `all files` as a current-file fallback
 
    In the branch-level `all files` scope, files are ordered for review priority: changed files referenced by more other changed files come first, then modified/renamed before added before deleted, then source files before tests/docs/changesets, then path order. The navigator can filter to files related to the active file with `r`. In related mode, `→` means the active file references that file, `←` means that file references the active file, and `↔` means both. Press `r` again to return to all files.
-3. Move to the file and line you care about; press `v` when you want side-by-side diff view
+3. Move to the file and line you care about; press `v` when you want side-by-side diff view. If the selected entry is a git submodule, press `Enter` or `→` to review inside it, then press `b` to return.
 4. Add annotations:
    - `f` for a line annotation with `FIX` preselected
    - `d` or `c` for a line annotation with `DISCUSS` preselected
@@ -87,6 +87,8 @@ Configure the shortcut with `globalShortcut` in `~/.pi/agent/extensions/slopchop
    - `a` for a whole-change note
 5. Press `s` to insert the review prompt into the editor
 6. Read it, tweak it if you want, then send it normally
+
+If you review inside a submodule and then return to the parent review, pressing `s` from the parent still includes those nested annotations.
 
 ### Fastest path
 
@@ -179,6 +181,7 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `u` — toggle unchanged context in diff scopes
 - `h` — hide/show the comments pane
 - `s` — insert the generated prompt into the editor
+- `b` — return to the parent review when inside a nested submodule review
 - `Esc` — request review exit; confirms before discarding draft feedback
 - `Ctrl+C` — request review exit with the same confirmation flow
 
@@ -189,13 +192,14 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `gg / G` — jump to the top / bottom
 - `r` — toggle related-files filter in `all files` scope
 - file rows show change counts as `+added -deleted`
-- `Enter` — move focus to diff
+- rows with `↗` are git submodules
+- `Enter` — move focus to diff, or drill into the selected submodule
 
 #### Diff
 
 - `↑↓` or `j/k` — move between selectable added/deleted lines
 - `Shift+↑↓` — extend the selection into a multiline range on the current side
-- `← / →` — choose the old/deleted or new/added side on replacement rows in side-by-side view
+- `← / →` — choose the old/deleted or new/added side on replacement rows in side-by-side view; `→` also drills into a selected submodule
 - `Ctrl+d` / `Ctrl+u` — move down / up by half a pane
 - `gg / G` — jump to the top / bottom
 - `n / p` — next / previous hunk
@@ -308,6 +312,8 @@ It groups feedback naturally into sections like:
 - line comments
 
 and uses stricter instructions when `DISCUSS` items are present, so the model is less likely to turn explanatory comments into accidental edits.
+
+For nested submodule reviews, generated paths keep the outer repo path prefix. For example, if you drill into `submodule-1` and comment on `docs/note.md`, the final prompt will use `submodule-1/docs/note.md`. This is intentional: the model needs the path exactly as the top-level repo sees it.
 
 ### What it is good at
 

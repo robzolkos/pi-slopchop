@@ -1,10 +1,8 @@
 import type { CommentIntent, DiffReviewComment, ReviewFile, ReviewScope, ReviewSubmitPayload } from "./types.js";
-import { formatIntentLabel } from "./types.js";
+import { formatIntentLabel, getReviewFileDisplayPath } from "./types.js";
 
 function getCommentFilePath(file: ReviewFile | undefined, scope: ReviewScope): string {
-  if (file == null) return "(unknown file)";
-  const comparison = scope === "git-diff" ? file.gitDiff : scope === "last-commit" ? file.lastCommit : file.allFiles;
-  return comparison?.displayPath ?? file.path;
+  return file == null ? "(unknown file)" : getReviewFileDisplayPath(file, scope);
 }
 
 function formatLocation(comment: DiffReviewComment, file: ReviewFile | undefined): string {

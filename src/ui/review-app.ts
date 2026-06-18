@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Editor, type EditorTheme, Key, matchesKey, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { adjustStructuredDiffContext, buildStructuredDiff, type StructuredDiff, type StructuredDiffVisibleItem } from "../diff.js";
 import {
   clampSelectedLineTarget,
@@ -36,7 +36,7 @@ import { getShortcutConfigPath, getShortcutsForSide, type CommentShortcut } from
 import { filterFilesBySearch } from "../search.js";
 import { highlightJsonLine, highlightMarkdownLine } from "../theme-highlight.js";
 import type { CommentIntent, DiffReviewComment, ReviewFile, ReviewFileContents, ReviewLineTarget, ReviewResult, ReviewScope, ReviewState } from "../types.js";
-import { formatIntentLabel, formatScopeLabel } from "../types.js";
+import { formatIntentLabel, formatScopeLabel, getReviewFileDisplayPath, isSubmoduleReviewFile, joinReviewPath } from "../types.js";
 
 interface LoadedEntryReady {
   status: "ready";
@@ -64,12 +64,26 @@ type CommentPanelItem =
   | { kind: "all"; body: string; intent: CommentIntent }
   | { kind: "comment"; comment: DiffReviewComment };
 
+interface ReviewFrame {
+  /** Full review state for one repo/submodule level. */
+  repoRoot: string;
+  pathPrefix?: string;
+  files: ReviewFile[];
+  state: ReviewState;
+  cache: Map<string, LoadedEntry>;
+  navigatorScroll: number;
+  diffScroll: number;
+  commentsScroll: number;
+  relatedFilterAnchorFileId: string | null;
+  relatedFilterReturnFileId: string | null;
+}
+
 interface ReviewAppOptions {
   files: ReviewFile[];
   repoRoot: string;
-  loadFileContents: (file: ReviewFile, scope: ReviewScope) => Promise<ReviewFileContents>;
+  loadFileContents: (repoRoot: string, file: ReviewFile, scope: ReviewScope) => Promise<ReviewFileContents>;
+  loadReviewData: (cwd: string) => Promise<{ repoRoot: string; files: ReviewFile[] }>;
   commentShortcuts: CommentShortcut[];
-  notify: ExtensionContext["ui"]["notify"];
 }
 
 interface MousePaneBounds {
@@ -88,6 +102,16 @@ interface MousePaneLayout {
 const SEARCHABLE_SCOPES: ReviewScope[] = ["git-diff", "last-commit", "all-files"];
 const DEFAULT_CONTEXT_LINES = 3;
 const STACKED_LAYOUT_MAX_WIDTH = 99;
+
+function formatFrameLabel(repoRoot: string): string {
+  const label = repoRoot.split("/").filter((part) => part.length > 0).pop() ?? repoRoot;
+  return label.length > 0 ? label : repoRoot;
+}
+
+function namespaceReviewFileId(pathPrefix: string | undefined, fileId: string): string {
+  // Prevent parent/submodule file ID collisions during aggregated submission.
+  return pathPrefix == null || pathPrefix.length === 0 ? fileId : `${pathPrefix}::${fileId}`;
+}
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -231,7 +255,13 @@ export function getRelatedFileMarker(file: ReviewFile, activeFile: ReviewFile | 
   return null;
 }
 
-export type ReviewAppTheme = Parameters<ExtensionContext["ui"]["custom"]>[0] extends (tui: any, theme: infer T, kb: any, done: any) => any ? T : never;
+type ReviewAppTui = TUI;
+
+interface ReviewAppTheme {
+  fg(color: string, text: string): string;
+  bg(color: string, text: string): string;
+}
+
 type Theme = ReviewAppTheme;
 
 function repeat(char: string, count: number): string {
@@ -259,8 +289,7 @@ function getScopeComparison(file: ReviewFile | null, scope: ReviewScope) {
 }
 
 function getScopeDisplayPath(file: ReviewFile | null, scope: ReviewScope): string {
-  const comparison = getScopeComparison(file, scope);
-  return comparison?.displayPath ?? file?.path ?? "(no file)";
+  return getReviewFileDisplayPath(file, scope);
 }
 
 function getStatusLabel(file: ReviewFile | null, scope: ReviewScope): string {
@@ -426,7 +455,13 @@ function renderOuterFrame(
   return [top, ...body, bottom];
 }
 
-const FOOTER_ACTION_HINT = "Tab focus • / search • ? help/actions • v diff view • s submit • Esc exit";
+const GO_BACK_SHORTCUT = "b";
+
+function getFooterActionHint(canGoBack: boolean): string {
+  return canGoBack
+    ? `Tab focus • / search • ? help/actions • v diff view • s submit • ${GO_BACK_SHORTCUT} return • Esc exit`
+    : "Tab focus • / search • ? help/actions • v diff view • s submit • Esc exit";
+}
 
 const HELP_KEY_SECTIONS = [
   {
@@ -438,6 +473,7 @@ const HELP_KEY_SECTIONS = [
       "w wrap lines • v toggle diff view",
       "u toggle unchanged context",
       "h hide/show comments • s submit",
+      `${GO_BACK_SHORTCUT} return from submodule`,
       "Esc exit review • Ctrl+C exit alias",
     ],
   },
@@ -446,7 +482,7 @@ const HELP_KEY_SECTIONS = [
     lines: [
       "navigator: ↑↓/j/k files",
       "Ctrl+d/u half-page • gg/G top/bottom",
-      "r related filter • Enter focus diff",
+      "r related filter • Enter/→ open submodule or focus diff",
     ],
   },
   {
@@ -455,6 +491,7 @@ const HELP_KEY_SECTIONS = [
       "diff: ↑↓/j/k lines",
       "Shift+↑↓ extend range",
       "←/→ choose side in side-by-side view",
+      `Enter/→ open selected submodule • ${GO_BACK_SHORTCUT} return`,
       "Ctrl+d/u half-page • gg/G top/bottom",
       "n/p next/previous hunk",
       "t templates • o open in $EDITOR",
@@ -506,10 +543,10 @@ export function buildCommentPanelEmptyStateLines(theme: Theme, width: number): s
   ];
 }
 
-export function buildFooterLines(theme: Theme, promptStatus: string, frameInnerWidth: number): string[] {
+export function buildFooterLines(theme: Theme, promptStatus: string, frameInnerWidth: number, canGoBack = false): string[] {
   return [
     truncateToWidth(theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-    truncateToWidth(theme.fg("dim", FOOTER_ACTION_HINT), frameInnerWidth, "…", false),
+    truncateToWidth(theme.fg("dim", getFooterActionHint(canGoBack)), frameInnerWidth, "…", false),
   ];
 }
 
@@ -788,8 +825,12 @@ function getCommentableLineTargets(diff: StructuredDiff): ReviewLineTarget[] {
 class ReviewApp {
   focused = false;
 
+  private repoRoot: string;
+  private files: ReviewFile[];
   private state: ReviewState;
-  private readonly cache = new Map<string, LoadedEntry>();
+  private cache = new Map<string, LoadedEntry>();
+  private readonly frameStack: ReviewFrame[] = [];
+  private readonly archivedFrames = new Map<string, ReviewFrame>();
   private searchMode = false;
   private searchBuffer = "";
   private shortcutMode = false;
@@ -818,11 +859,13 @@ class ReviewApp {
   private readonly renderedDiffLineCache = new Map<string, string[]>();
 
   constructor(
-    private readonly tui: any,
+    private readonly tui: ReviewAppTui,
     private readonly theme: Theme,
-    private readonly done: (value: ReviewResult) => void,
+    private readonly done: (value: { result: ReviewResult; files: ReviewFile[] }) => void,
     private readonly options: ReviewAppOptions,
   ) {
+    this.repoRoot = options.repoRoot;
+    this.files = options.files;
     this.state = ensureActiveFile(createInitialReviewState(options.files), options.files);
     this.searchBuffer = this.state.searchQuery;
 
@@ -874,6 +917,219 @@ class ReviewApp {
     if (typeof this.tui.requestRender === "function") {
       this.tui.requestRender();
     }
+  }
+
+  private getCurrentFrameLabel(): string {
+    return formatFrameLabel(this.repoRoot);
+  }
+
+  private saveCurrentFrame(): ReviewFrame {
+    // Preserve nested review state when drilling in/out of submodules.
+    return {
+      repoRoot: this.repoRoot,
+      pathPrefix: this.files[0]?.pathPrefix,
+      files: this.files,
+      state: this.state,
+      cache: this.cache,
+      navigatorScroll: this.navigatorScroll,
+      diffScroll: this.diffScroll,
+      commentsScroll: this.commentsScroll,
+      relatedFilterAnchorFileId: this.relatedFilterAnchorFileId,
+      relatedFilterReturnFileId: this.relatedFilterReturnFileId,
+    };
+  }
+
+  private getFrameKey(repoRoot: string, pathPrefix: string | undefined): string {
+    return `${repoRoot}::${pathPrefix ?? ""}`;
+  }
+
+  private archiveFrame(frame: ReviewFrame): void {
+    this.archivedFrames.set(this.getFrameKey(frame.repoRoot, frame.pathPrefix), frame);
+  }
+
+  private getArchivedFrame(repoRoot: string, pathPrefix: string | undefined): ReviewFrame | undefined {
+    return this.archivedFrames.get(this.getFrameKey(repoRoot, pathPrefix));
+  }
+
+  private collectAllFrames(): ReviewFrame[] {
+    const frames = new Map<string, ReviewFrame>();
+
+    // Submission/discard should consider archived child frames, active parent
+    // frames, and the frame currently being rendered.
+    for (const frame of this.archivedFrames.values()) {
+      frames.set(this.getFrameKey(frame.repoRoot, frame.pathPrefix), frame);
+    }
+    for (const frame of this.frameStack) {
+      frames.set(this.getFrameKey(frame.repoRoot, frame.pathPrefix), frame);
+    }
+
+    const currentFrame = this.saveCurrentFrame();
+    frames.set(this.getFrameKey(currentFrame.repoRoot, currentFrame.pathPrefix), currentFrame);
+    return [...frames.values()];
+  }
+
+  private buildAggregatedSubmitData(): { files: ReviewFile[]; draft: ReviewState["draft"] } {
+    const frames = this.collectAllFrames();
+    // Parent-level submission must include nested submodule drafts too.
+    const currentFrame = this.saveCurrentFrame();
+    const currentFrameKey = this.getFrameKey(currentFrame.repoRoot, currentFrame.pathPrefix);
+    const aggregatedFiles: ReviewFile[] = [];
+    const aggregatedComments: DiffReviewComment[] = [];
+
+    for (const frame of frames) {
+      aggregatedFiles.push(...frame.files);
+      aggregatedComments.push(...frame.state.draft.comments);
+
+      if (frame.state.draft.allComment.trim().length === 0) continue;
+      if (this.getFrameKey(frame.repoRoot, frame.pathPrefix) === currentFrameKey) continue;
+
+      // Nested frame-wide notes need a synthetic anchor in the final prompt.
+      const noteFileId = `frame-note:${this.getFrameKey(frame.repoRoot, frame.pathPrefix)}`;
+      aggregatedFiles.push({
+        id: noteFileId,
+        path: frame.pathPrefix ?? formatFrameLabel(frame.repoRoot),
+        worktreeStatus: null,
+        hasWorkingTreeFile: false,
+        inGitDiff: frame.state.activeScope === "git-diff",
+        inLastCommit: frame.state.activeScope === "last-commit",
+        inAllFiles: frame.state.activeScope === "all-files",
+        gitDiff: null,
+        lastCommit: null,
+        allFiles: null,
+      });
+      aggregatedComments.push({
+        id: `${noteFileId}::all-note`,
+        fileId: noteFileId,
+        scope: frame.state.activeScope,
+        side: "file",
+        intent: frame.state.draft.allIntent,
+        startLine: null,
+        endLine: null,
+        body: frame.state.draft.allComment,
+      });
+    }
+
+    return {
+      files: aggregatedFiles,
+      draft: {
+        // Only the current frame owns the true review-wide note.
+        allComment: currentFrame.state.draft.allComment,
+        allIntent: currentFrame.state.draft.allIntent,
+        comments: aggregatedComments,
+      },
+    };
+  }
+
+  private hasAggregateDraftContent(): boolean {
+    return this.collectAllFrames().some((frame) => hasDraftContent(frame.state));
+  }
+
+  private getAggregateDraftCommentCount(): number {
+    return this.collectAllFrames().reduce((count, frame) => count + getDraftCommentCount(frame.state), 0);
+  }
+
+  private restoreFrame(frame: ReviewFrame): void {
+    this.repoRoot = frame.repoRoot;
+    this.files = frame.files;
+    this.state = frame.state;
+    this.cache = frame.cache;
+    this.navigatorScroll = frame.navigatorScroll;
+    this.diffScroll = frame.diffScroll;
+    this.commentsScroll = frame.commentsScroll;
+    this.relatedFilterAnchorFileId = frame.relatedFilterAnchorFileId;
+    this.relatedFilterReturnFileId = frame.relatedFilterReturnFileId;
+    this.searchMode = false;
+    this.searchBuffer = this.state.searchQuery;
+    this.shortcutMode = false;
+    this.helpMode = false;
+    this.confirmCancel = false;
+    this.editTarget = null;
+    this.commentsHidden = false;
+    this.message = null;
+    this.syncCursorMode();
+    this.ensureLineSelection();
+  }
+
+  private async openSubmoduleReview(file: ReviewFile): Promise<void> {
+    if (!isSubmoduleReviewFile(file)) return;
+
+    const currentFrame = this.saveCurrentFrame();
+    this.setMessage(`Opening submodule ${file.path}…`);
+    this.requestRender();
+
+    try {
+      const pathPrefix = joinReviewPath(file.pathPrefix, file.path);
+      const archivedFrame = this.getArchivedFrame(file.submodule.repoRoot, pathPrefix);
+      if (archivedFrame != null) {
+        this.archivedFrames.delete(this.getFrameKey(file.submodule.repoRoot, pathPrefix));
+        this.frameStack.push(currentFrame);
+        this.restoreFrame(archivedFrame);
+        this.message = `Reviewing submodule ${file.path}. Press ${GO_BACK_SHORTCUT} to go back.`;
+        this.requestRender();
+        return;
+      }
+
+      const reviewData = await this.options.loadReviewData(file.submodule.repoRoot);
+      if (reviewData.files.length === 0) {
+        this.setMessage(`No reviewable files found inside submodule ${file.path}.`);
+        this.requestRender();
+        return;
+      }
+
+      const prefixedFiles = reviewData.files.map((nestedFile) => ({
+        ...nestedFile,
+        id: namespaceReviewFileId(pathPrefix, nestedFile.id),
+        pathPrefix,
+      }));
+
+      this.frameStack.push(currentFrame);
+      this.repoRoot = reviewData.repoRoot;
+      this.files = prefixedFiles;
+      this.state = ensureActiveFile(createInitialReviewState(prefixedFiles), prefixedFiles);
+      this.cache = new Map();
+      this.navigatorScroll = 0;
+      this.diffScroll = 0;
+      this.commentsScroll = 0;
+      this.relatedFilterAnchorFileId = null;
+      this.relatedFilterReturnFileId = null;
+      this.searchMode = false;
+      this.searchBuffer = this.state.searchQuery;
+      this.shortcutMode = false;
+      this.helpMode = false;
+      this.confirmCancel = false;
+      this.commentsHidden = false;
+      this.message = `Reviewing submodule ${file.path}. Press ${GO_BACK_SHORTCUT} to go back.`;
+      void this.ensureActiveEntry();
+      this.requestRender();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.setMessage(`Could not open submodule ${file.path}: ${message}`);
+      this.requestRender();
+    }
+  }
+
+  private closeSubmoduleReview(): void {
+    const currentFrame = this.saveCurrentFrame();
+    const previous = this.frameStack.pop();
+    if (previous == null) return;
+
+    this.archiveFrame(currentFrame);
+    this.restoreFrame(previous);
+    this.setMessage(`Returned to ${this.getCurrentFrameLabel()}.`);
+    this.requestRender();
+  }
+
+  private drillIntoSelectedSubmodule(): boolean {
+    const file = this.activeSubmoduleFile();
+    if (file == null) return false;
+    void this.openSubmoduleReview(file);
+    return true;
+  }
+
+  private navigateBackFromSubmodule(): boolean {
+    if (this.frameStack.length === 0) return false;
+    this.closeSubmoduleReview();
+    return true;
   }
 
   private writeTerminal(data: string): void {
@@ -949,7 +1205,12 @@ class ReviewApp {
   }
 
   private activeFile(): ReviewFile | null {
-    return this.options.files.find((file) => file.id === this.state.activeFileId) ?? null;
+    return this.files.find((file) => file.id === this.state.activeFileId) ?? null;
+  }
+
+  private activeSubmoduleFile(): (ReviewFile & { submodule: NonNullable<ReviewFile["submodule"]> }) | null {
+    const file = this.activeFile();
+    return isSubmoduleReviewFile(file) ? file : null;
   }
 
   private cacheKey(fileId: string, scope: ReviewScope): string {
@@ -968,6 +1229,9 @@ class ReviewApp {
   }
 
   private getDisplayDiff(fileId: string | null, scope: ReviewScope): StructuredDiff | null {
+    const file = fileId == null ? null : this.files.find((candidate) => candidate.id === fileId) ?? null;
+    if (isSubmoduleReviewFile(file)) return null;
+
     const entry = this.getEntry(fileId, scope);
     if (entry?.status !== "ready") return null;
     if (scope === "all-files") return entry.baseDiff;
@@ -982,11 +1246,11 @@ class ReviewApp {
 
   private relatedFilterAnchorFile(): ReviewFile | null {
     if (this.relatedFilterAnchorFileId == null || this.state.activeScope !== "all-files") return null;
-    return this.options.files.find((file) => file.id === this.relatedFilterAnchorFileId) ?? null;
+    return this.files.find((file) => file.id === this.relatedFilterAnchorFileId) ?? null;
   }
 
   private getNavigatorFiles(): ReviewFile[] {
-    let files = getScopedFiles(this.options.files, this.state.activeScope);
+    let files = getScopedFiles(this.files, this.state.activeScope);
     const anchor = this.relatedFilterAnchorFile();
 
     if (anchor != null) {
@@ -1012,7 +1276,7 @@ class ReviewApp {
 
   private async ensureActiveEntry(): Promise<void> {
     const file = this.activeFile();
-    if (file == null) return;
+    if (file == null || isSubmoduleReviewFile(file)) return;
     const key = this.cacheKey(file.id, this.state.activeScope);
     if (this.cache.has(key)) {
       this.ensureLineSelection();
@@ -1023,7 +1287,7 @@ class ReviewApp {
     this.requestRender();
 
     try {
-      const contents = await this.options.loadFileContents(file, this.state.activeScope);
+      const contents = await this.options.loadFileContents(this.repoRoot, file, this.state.activeScope);
       const baseDiff = buildStructuredDiff(contents.originalContent, contents.modifiedContent, DEFAULT_CONTEXT_LINES);
       this.cache.set(key, { status: "ready", contents, baseDiff });
       this.ensureLineSelection();
@@ -1038,7 +1302,7 @@ class ReviewApp {
   private setScope(scope: ReviewScope): void {
     this.relatedFilterAnchorFileId = null;
     this.relatedFilterReturnFileId = null;
-    this.state = setScope(this.state, this.options.files, scope);
+    this.state = setScope(this.state, this.files, scope);
     this.diffScroll = 0;
     this.navigatorScroll = 0;
     this.commentsScroll = 0;
@@ -1058,7 +1322,7 @@ class ReviewApp {
 
   private closeSearch(apply: boolean): void {
     if (apply) {
-      this.state = setSearchQuery(this.state, this.options.files, this.searchBuffer);
+      this.state = setSearchQuery(this.state, this.files, this.searchBuffer);
       void this.ensureActiveEntry();
     }
     this.searchMode = false;
@@ -1067,6 +1331,7 @@ class ReviewApp {
 
   private openEditor(target: EditTarget): void {
     this.commentsHidden = false;
+    this.state = setFocus(this.state, "comments");
     this.editTarget = target;
     this.editor.setText(target.initialBody);
     this.syncCursorMode();
@@ -1120,6 +1385,11 @@ class ReviewApp {
   private editLineCommentWithIntent(defaultIntent: CommentIntent): void {
     const file = this.activeFile();
     if (file == null) return;
+    if (isSubmoduleReviewFile(file)) {
+      this.setMessage(`Press Enter to review inside submodule ${file.path}.`);
+      this.requestRender();
+      return;
+    }
     const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
     if (target == null) {
       this.setMessage("No selectable diff line in view.");
@@ -1143,6 +1413,11 @@ class ReviewApp {
   private editLineComment(): void {
     const file = this.activeFile();
     if (file == null) return;
+    if (isSubmoduleReviewFile(file)) {
+      this.setMessage(`Press Enter to review inside submodule ${file.path}.`);
+      this.requestRender();
+      return;
+    }
     const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
     if (target == null) {
       this.setMessage("No selectable diff line in view.");
@@ -1166,6 +1441,11 @@ class ReviewApp {
   private editFileComment(): void {
     const file = this.activeFile();
     if (file == null) return;
+    if (isSubmoduleReviewFile(file)) {
+      this.setMessage(`Press Enter to review inside submodule ${file.path}.`);
+      this.requestRender();
+      return;
+    }
     const existing = getFileComment(this.state, file.id, this.state.activeScope);
     this.openEditor({
       kind: "file",
@@ -1182,7 +1462,7 @@ class ReviewApp {
 
   private editCurrentLineComment(): void {
     const file = this.activeFile();
-    if (file == null) return;
+    if (file == null || isSubmoduleReviewFile(file)) return;
     const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
     if (target == null) return;
     const existing = getLineComment(this.state, file.id, this.state.activeScope, target.side, target.line);
@@ -1196,7 +1476,7 @@ class ReviewApp {
 
   private deleteCurrentLineComment(): void {
     const file = this.activeFile();
-    if (file == null) return;
+    if (file == null || isSubmoduleReviewFile(file)) return;
     const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
     if (target == null) return;
     const existing = getLineComment(this.state, file.id, this.state.activeScope, target.side, target.line);
@@ -1251,6 +1531,12 @@ class ReviewApp {
       return;
     }
 
+    if (isSubmoduleReviewFile(file)) {
+      this.setMessage(`Press Enter to review inside submodule ${file.path}.`);
+      this.requestRender();
+      return;
+    }
+
     if (!file.hasWorkingTreeFile) {
       this.setMessage("Cannot open this file in $EDITOR because it does not exist in the working tree.");
       this.requestRender();
@@ -1273,7 +1559,7 @@ class ReviewApp {
 
     const editorLine = getEditorLineForTarget(diff, target);
     const editorCommand = (process.env.EDITOR || process.env.VISUAL || "vi").trim() || "vi";
-    const filePath = join(this.options.repoRoot, file.path);
+    const filePath = join(this.repoRoot, file.path);
     const command = buildEditorLaunchCommand(editorCommand, filePath, editorLine);
 
     this.externalEditorOpen = true;
@@ -1284,7 +1570,7 @@ class ReviewApp {
       this.setMouseTracking(false);
       if (typeof this.tui.stop === "function") this.tui.stop();
       if (typeof this.tui.terminal?.clearScreen === "function") this.tui.terminal.clearScreen();
-      const code = await runShellCommand(command, this.options.repoRoot);
+      const code = await runShellCommand(command, this.repoRoot);
       this.setMessage(code === 0 ? `Returned from $EDITOR at ${file.path}:${editorLine}.` : `$EDITOR exited with code ${code ?? "unknown"}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1300,20 +1586,22 @@ class ReviewApp {
   }
 
   private submit(): void {
-    if (!hasDraftContent(this.state)) {
+    if (!this.hasAggregateDraftContent()) {
       this.setMessage("Add at least one line comment, file comment, or all note before submitting.");
       this.requestRender();
       return;
     }
-    this.done({ type: "submit", ...this.state.draft });
+
+    const aggregated = this.buildAggregatedSubmitData();
+    this.done({ result: { type: "submit", ...aggregated.draft }, files: aggregated.files });
   }
 
   private cancel(): void {
-    this.done({ type: "cancel" });
+    this.done({ result: { type: "cancel" }, files: this.files });
   }
 
   private requestCancel(): void {
-    if (getCancelAction(this.state) === "cancel") {
+    if (!this.hasAggregateDraftContent()) {
       this.cancel();
       return;
     }
@@ -1455,7 +1743,7 @@ class ReviewApp {
       this.relatedFilterAnchorFileId = null;
       this.relatedFilterReturnFileId = null;
       if (returnFileId != null) {
-        this.state = setActiveFileId(this.state, this.options.files, returnFileId);
+        this.state = setActiveFileId(this.state, this.files, returnFileId);
         void this.ensureActiveEntry();
       }
       this.navigatorScroll = 0;
@@ -1488,7 +1776,7 @@ class ReviewApp {
   private moveNavigatorSelection(delta: number): void {
     const files = this.getNavigatorFiles();
     if (files.length === 0) {
-      this.state = setActiveFileId(this.state, this.options.files, null);
+      this.state = setActiveFileId(this.state, this.files, null);
       this.requestRender();
       return;
     }
@@ -1496,7 +1784,7 @@ class ReviewApp {
     const index = files.findIndex((file) => file.id === this.state.activeFileId);
     const currentIndex = index >= 0 ? index : 0;
     const nextIndex = Math.max(0, Math.min(files.length - 1, currentIndex + delta));
-    this.state = setActiveFileId(this.state, this.options.files, files[nextIndex]!.id);
+    this.state = setActiveFileId(this.state, this.files, files[nextIndex]!.id);
     void this.ensureActiveEntry();
     this.requestRender();
   }
@@ -1528,7 +1816,7 @@ class ReviewApp {
       const files = this.getNavigatorFiles();
       if (files.length === 0) return;
       const file = direction === "start" ? files[0]! : files[files.length - 1]!;
-      this.state = setActiveFileId(this.state, this.options.files, file.id);
+      this.state = setActiveFileId(this.state, this.files, file.id);
       void this.ensureActiveEntry();
       this.requestRender();
       return;
@@ -1613,14 +1901,14 @@ class ReviewApp {
     }
     if (matchesKey(data, Key.backspace)) {
       this.searchBuffer = this.searchBuffer.slice(0, -1);
-      this.state = setSearchQuery(this.state, this.options.files, this.searchBuffer);
+      this.state = setSearchQuery(this.state, this.files, this.searchBuffer);
       void this.ensureActiveEntry();
       this.requestRender();
       return;
     }
     if (data.length === 1 && data >= " ") {
       this.searchBuffer += data;
-      this.state = setSearchQuery(this.state, this.options.files, this.searchBuffer);
+      this.state = setSearchQuery(this.state, this.files, this.searchBuffer);
       void this.ensureActiveEntry();
       this.requestRender();
     }
@@ -1694,6 +1982,7 @@ class ReviewApp {
     if (data === "g") { this.pendingVimSequence = "g"; return; }
     if (data === "G") { this.jumpToBoundary("end"); return; }
     if (data === "/") { this.openSearch(); return; }
+    if (data.toLowerCase() === GO_BACK_SHORTCUT && this.navigateBackFromSubmodule()) { return; }
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) { this.requestCancel(); return; }
     if (data === "h") { this.toggleCommentsPane(); return; }
     if (data === "w") { this.state = setWrapLines(this.state, !this.state.wrapLines); this.requestRender(); return; }
@@ -1726,7 +2015,14 @@ class ReviewApp {
         this.toggleRelatedFilter();
         return;
       }
+      if (data.toLowerCase() === GO_BACK_SHORTCUT && this.navigateBackFromSubmodule()) {
+        return;
+      }
+      if (matchesKey(data, Key.right)) {
+        if (this.drillIntoSelectedSubmodule()) return;
+      }
       if (matchesKey(data, Key.enter)) {
+        if (this.drillIntoSelectedSubmodule()) return;
         this.state = setFocus(this.state, "diff");
         this.requestRender();
       }
@@ -1761,6 +2057,7 @@ class ReviewApp {
         }
         if (matchesKey(data, Key.right)) {
           if (this.selectSideBySidePair("added")) return;
+          if (this.drillIntoSelectedSubmodule()) return;
         }
         if (matchesKey(data, Key.ctrl("d"))) {
           this.moveDiffSelection(getHalfPageStep(this.diffPageSize));
@@ -1769,6 +2066,9 @@ class ReviewApp {
         if (matchesKey(data, Key.ctrl("u"))) {
           this.moveDiffSelection(-getHalfPageStep(this.diffPageSize));
           return;
+        }
+        if (matchesKey(data, Key.enter)) {
+          if (this.drillIntoSelectedSubmodule()) return;
         }
         if (data === "o") {
           void this.openSelectedLineInEditor();
@@ -1795,6 +2095,12 @@ class ReviewApp {
     }
 
     if (this.state.focus === "comments") {
+      if (data.toLowerCase() === GO_BACK_SHORTCUT && this.navigateBackFromSubmodule()) {
+        return;
+      }
+      if ((matchesKey(data, Key.right) || matchesKey(data, Key.enter)) && this.drillIntoSelectedSubmodule()) {
+        return;
+      }
       const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
       if (matchesKey(data, Key.down) || data === "j") {
         this.moveCommentSelection(1);
@@ -1829,7 +2135,7 @@ class ReviewApp {
     const relatedAnchor = this.relatedFilterAnchorFile();
     const relatedSuffix = relatedAnchor == null ? "" : ` • related to ${shortenNavigatorPath(relatedAnchor.path, 24)}`;
     const titleSuffix = this.searchMode ? ` (${this.searchBuffer || "…"})` : this.state.searchQuery ? ` (${this.state.searchQuery})` : "";
-    lines.push(this.theme.fg("muted", `${files.length} file${files.length === 1 ? "" : "s"}${titleSuffix}${relatedSuffix}`));
+    lines.push(this.theme.fg("muted", `${files.length} entr${files.length === 1 ? "y" : "ies"}${titleSuffix}${relatedSuffix}`));
     lines.push("");
 
     if (files.length === 0) {
@@ -1859,13 +2165,14 @@ class ReviewApp {
       const count = getFileCommentCount(this.state, file.id, this.state.activeScope);
       const changeMarker = getChangeCountLabel(this.theme, file, this.state.activeScope);
       const commentMarker = count > 0 ? this.theme.fg("success", ` ${count}●`) : this.theme.fg("dim", "  ·");
+      const submoduleMarker = isSubmoduleReviewFile(file) ? this.theme.fg(active ? "accent" : "muted", " ↗") : "";
       const prefixText = `${prefix} ${status} `;
-      const pathWidth = Math.max(1, width - 2 - visibleWidth(prefixText) - visibleWidth(changeMarker) - visibleWidth(commentMarker));
+      const pathWidth = Math.max(1, width - 2 - visibleWidth(prefixText) - visibleWidth(changeMarker) - visibleWidth(commentMarker) - visibleWidth(submoduleMarker));
       const shortenedPath = shortenNavigatorPath(file.path, pathWidth);
       const pathText = active || (!relatedFilterActive && related)
         ? this.theme.fg("accent", shortenedPath)
         : this.theme.fg("text", shortenedPath);
-      lines.push(`${prefixText}${pathText}${changeMarker}${commentMarker}`);
+      lines.push(`${prefixText}${pathText}${submoduleMarker}${changeMarker}${commentMarker}`);
     }
 
     return renderBox("Navigator", width, height, this.theme, lines, this.state.focus === "navigator");
@@ -1957,6 +2264,16 @@ class ReviewApp {
     lines.push(this.theme.fg("dim", `${formatScopeLabel(this.state.activeScope)} • view ${formatDiffViewModeLabel(this.diffViewMode)} • wrap ${this.state.wrapLines ? "on" : "off"}${this.state.activeScope === "all-files" ? "" : ` • unchanged ${this.state.hideUnchanged ? "hidden" : "shown"}`}`));
     lines.push("");
 
+    if (isSubmoduleReviewFile(file)) {
+      lines.push(this.theme.fg("accent", `Submodule: ${file.path}`));
+      lines.push(this.theme.fg("muted", `Review this nested repo inside ${formatScopeLabel(this.state.activeScope)}.`));
+      lines.push(this.theme.fg("dim", "Press Enter or → to review inside this submodule."));
+      if (this.frameStack.length > 0) {
+        lines.push(this.theme.fg("dim", `Press ${GO_BACK_SHORTCUT} to return to the parent review.`));
+      }
+      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff");
+    }
+
     if (entry == null || entry.status === "loading") {
       lines.push(this.theme.fg("muted", "Loading file contents…"));
       return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff");
@@ -2043,7 +2360,7 @@ class ReviewApp {
   }
 
   private renderCancelConfirmation(): string[] {
-    const count = getDraftCommentCount(this.state);
+    const count = this.getAggregateDraftCommentCount();
     const noun = count === 1 ? "draft item" : "draft items";
     const lines = [
       this.theme.fg("warning", `Discard ${count} ${noun}?`),
@@ -2136,7 +2453,12 @@ class ReviewApp {
     }
 
     if (items.length === 0) {
-      lines.push(...buildCommentPanelEmptyStateLines(this.theme, width));
+      if (isSubmoduleReviewFile(file)) {
+        pushWrappedText(lines, this.theme, "This navigator entry is a submodule. Open it to review and comment on the nested repo.", contentWidth, "muted");
+        pushWrappedText(lines, this.theme, `Enter/→ open • ${GO_BACK_SHORTCUT} go back`, contentWidth, "dim");
+      } else {
+        lines.push(...buildCommentPanelEmptyStateLines(this.theme, width));
+      }
       return renderBox("Comments", width, height, this.theme, lines, this.state.focus === "comments");
     }
 
@@ -2174,7 +2496,7 @@ class ReviewApp {
     const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
 
     const stackPanes = shouldStackPanes(frameInnerWidth);
-    const bodyHeight = Math.max(stackPanes && !this.commentsHidden ? 9 : 6, frameInnerHeight - 5);
+    const bodyHeight = Math.max(stackPanes && !this.commentsHidden ? 9 : 6, frameInnerHeight - 6);
     const terminalCols = this.tui?.terminal?.columns ?? this.lastWidth;
     const overlayOriginCol = Math.max(0, Math.floor((terminalCols - this.lastWidth) / 2));
     const overlayOriginRow = Math.max(0, Math.floor((terminalRows - totalHeight) / 2));
@@ -2190,17 +2512,20 @@ class ReviewApp {
           ? `Search: ${this.searchBuffer}`
           : this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : `${formatFocusStatus(this.state.focus)} • ${layoutStatus}Tab focus • / search • t templates • v diff view • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit • Esc exit • Ctrl+C exit`);
+            : `${formatFocusStatus(this.state.focus)} • ${layoutStatus}Tab focus • / search • t templates • v diff view • ? help • 1/2/3 scopes • h ${this.commentsHidden ? "show" : "hide"} comments • o open in $EDITOR • s submit${this.frameStack.length > 0 ? ` • ${GO_BACK_SHORTCUT} return` : ""} • Esc exit • Ctrl+C exit`);
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
-      const count = getScopedFiles(this.options.files, scope).length;
+      const count = getScopedFiles(this.files, scope).length;
       const text = `${index + 1}:${formatScopeLabel(scope)}(${count})`;
       return active ? this.theme.bg("selectedBg", this.theme.fg("text", ` ${text} `)) : this.theme.fg("muted", ` ${text} `);
     }).join(" ");
+    const breadcrumbLabels = [...this.frameStack.map((frame) => formatFrameLabel(frame.repoRoot)), this.getCurrentFrameLabel()];
+    const breadcrumbText = `repo: ${breadcrumbLabels.join(" › ")}`;
 
     const headerLines = [
       truncateToWidth(scopeTabs, frameInnerWidth, "", false),
+      truncateToWidth(this.theme.fg("dim", breadcrumbText), frameInnerWidth, "…", false),
     ];
 
     const body: string[] = [];
@@ -2242,7 +2567,7 @@ class ReviewApp {
       }
     }
 
-    const footer = buildFooterLines(this.theme, promptStatus, frameInnerWidth);
+    const footer = buildFooterLines(this.theme, promptStatus, frameInnerWidth, this.frameStack.length > 0);
 
     const rendered = renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
     if (!this.confirmCancel) return rendered;
@@ -2252,10 +2577,10 @@ class ReviewApp {
 
 export async function runReviewApp(
   ctx: ExtensionContext,
-  options: Omit<ReviewAppOptions, "notify">,
-): Promise<ReviewResult> {
-  return ctx.ui.custom<ReviewResult>(
-    (tui, theme, _kb, done) => new ReviewApp(tui, theme, done, { ...options, notify: ctx.ui.notify.bind(ctx.ui) }),
+  options: ReviewAppOptions,
+): Promise<{ result: ReviewResult; files: ReviewFile[] }> {
+  return ctx.ui.custom<{ result: ReviewResult; files: ReviewFile[] }>(
+    (tui, theme, _kb, done) => new ReviewApp(tui, theme, done, options),
     {
       overlay: true,
       overlayOptions: {

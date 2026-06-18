@@ -30,10 +30,11 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
 
       notifyShortcutWarnings(ctx, shortcutConfig.warnings);
 
-      const result = await runReviewApp(ctx, {
+      const { result, files: submittedFiles } = await runReviewApp(ctx, {
         files,
         repoRoot,
-        loadFileContents: (file, scope) => loadReviewFileContents(pi, repoRoot, file, scope),
+        loadFileContents: (activeRepoRoot, file, scope) => loadReviewFileContents(pi, activeRepoRoot, file, scope),
+        loadReviewData: (cwd) => getReviewWindowData(pi, cwd),
         commentShortcuts: shortcutConfig.shortcuts,
       });
 
@@ -42,7 +43,7 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const prompt = composeReviewPrompt(files, result);
+      const prompt = composeReviewPrompt(submittedFiles, result);
       ctx.ui.setEditorText(prompt);
       ctx.ui.notify("Inserted review feedback into the editor.", "info");
     } catch (error) {

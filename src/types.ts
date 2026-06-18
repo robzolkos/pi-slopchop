@@ -13,9 +13,16 @@ export interface ReviewFileComparison {
   deletions?: number;
 }
 
+export interface ReviewSubmoduleInfo {
+  /** Absolute repo root for a drillable nested git repository. */
+  repoRoot: string;
+}
+
 export interface ReviewFile {
   id: string;
   path: string;
+  /** Parent repo path prefix used when rendering nested review file paths. */
+  pathPrefix?: string;
   worktreeStatus: ChangeStatus | null;
   hasWorkingTreeFile: boolean;
   inGitDiff: boolean;
@@ -27,6 +34,7 @@ export interface ReviewFile {
   allFilesReferenceCount?: number;
   allFilesOutgoingReferences?: string[];
   allFilesIncomingReferences?: string[];
+  submodule?: ReviewSubmoduleInfo;
 }
 
 export interface ReviewFileContents {
@@ -104,4 +112,28 @@ export function formatIntentLabel(intent: CommentIntent): string {
     case "fix": return "FIX";
     case "discuss": return "DISCUSS";
   }
+}
+
+export function isSubmoduleReviewFile(file: ReviewFile | null | undefined): file is ReviewFile & { submodule: ReviewSubmoduleInfo } {
+  return file?.submodule != null;
+}
+
+export function joinReviewPath(prefix: string | undefined, path: string): string {
+  return prefix == null || prefix.length === 0 ? path : `${prefix}/${path}`;
+}
+
+function getPrefixedComparisonDisplayPath(prefix: string | undefined, comparison: ReviewFileComparison): string {
+  if (comparison.status === "renamed" && comparison.oldPath != null && comparison.newPath != null) {
+    return `${joinReviewPath(prefix, comparison.oldPath)} -> ${joinReviewPath(prefix, comparison.newPath)}`;
+  }
+
+  return joinReviewPath(prefix, comparison.displayPath);
+}
+
+export function getReviewFileDisplayPath(file: ReviewFile | null | undefined, scope: ReviewScope): string {
+  if (file == null) return "(no file)";
+  const comparison = scope === "git-diff" ? file.gitDiff : scope === "last-commit" ? file.lastCommit : file.allFiles;
+  return comparison == null
+    ? joinReviewPath(file.pathPrefix, file.path)
+    : getPrefixedComparisonDisplayPath(file.pathPrefix, comparison);
 }

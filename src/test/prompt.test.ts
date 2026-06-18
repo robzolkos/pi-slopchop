@@ -205,4 +205,144 @@ describe("composeReviewPrompt", () => {
     ].join("\n"));
     expect(prompt).not.toContain("DISCUSS items");
   });
+
+  it("prefixes nested repo paths in the generated prompt", () => {
+    const prompt = composeReviewPrompt([
+      {
+        ...files[0]!,
+        id: "nested",
+        path: "docs/local-agent-sandbox-note.md",
+        pathPrefix: "submodule-1",
+        gitDiff: {
+          status: "modified",
+          oldPath: "docs/local-agent-sandbox-note.md",
+          newPath: "docs/local-agent-sandbox-note.md",
+          displayPath: "docs/local-agent-sandbox-note.md",
+          hasOriginal: true,
+          hasModified: true,
+        },
+        lastCommit: null,
+      },
+    ], {
+      type: "submit",
+      allComment: "",
+      allIntent: "fix",
+      comments: [
+        {
+          id: "1",
+          fileId: "nested",
+          scope: "git-diff",
+          side: "added",
+          intent: "fix",
+          startLine: 3,
+          endLine: 5,
+          body: "Is this needed?",
+        },
+      ],
+    });
+
+    expect(prompt).toContain("1. submodule-1/docs/local-agent-sandbox-note.md:3-5 (added)");
+  });
+
+  it("prefixes both sides of nested renamed paths", () => {
+    const prompt = composeReviewPrompt([
+      {
+        ...files[0]!,
+        id: "renamed-nested",
+        path: "src/new-name.ts",
+        pathPrefix: "submodule-1",
+        gitDiff: null,
+        lastCommit: {
+          status: "renamed",
+          oldPath: "src/old-name.ts",
+          newPath: "src/new-name.ts",
+          displayPath: "src/old-name.ts -> src/new-name.ts",
+          hasOriginal: true,
+          hasModified: true,
+        },
+      },
+    ], {
+      type: "submit",
+      allComment: "",
+      allIntent: "fix",
+      comments: [
+        {
+          id: "1",
+          fileId: "renamed-nested",
+          scope: "last-commit",
+          side: "file",
+          intent: "fix",
+          startLine: null,
+          endLine: null,
+          body: "Review this rename.",
+        },
+      ],
+    });
+
+    expect(prompt).toContain("- submodule-1/src/old-name.ts -> submodule-1/src/new-name.ts");
+  });
+
+  it("keeps nested prefixed paths in mixed fix and discuss output", () => {
+    const prompt = composeReviewPrompt([
+      {
+        ...files[0]!,
+        id: "nested-fix",
+        path: "docs/local-agent-sandbox-note.md",
+        pathPrefix: "submodule-1",
+        gitDiff: {
+          status: "modified",
+          oldPath: "docs/local-agent-sandbox-note.md",
+          newPath: "docs/local-agent-sandbox-note.md",
+          displayPath: "docs/local-agent-sandbox-note.md",
+          hasOriginal: true,
+          hasModified: true,
+        },
+        lastCommit: null,
+      },
+      {
+        ...files[0]!,
+        id: "nested-discuss",
+        path: "README.md",
+        pathPrefix: "submodule-1",
+        gitDiff: {
+          status: "modified",
+          oldPath: "README.md",
+          newPath: "README.md",
+          displayPath: "README.md",
+          hasOriginal: true,
+          hasModified: true,
+        },
+        lastCommit: null,
+      },
+    ], {
+      type: "submit",
+      allComment: "",
+      allIntent: "fix",
+      comments: [
+        {
+          id: "1",
+          fileId: "nested-fix",
+          scope: "git-diff",
+          side: "added",
+          intent: "fix",
+          startLine: 3,
+          endLine: 3,
+          body: "B: F: dsfdsf",
+        },
+        {
+          id: "2",
+          fileId: "nested-discuss",
+          scope: "git-diff",
+          side: "added",
+          intent: "discuss",
+          startLine: 134,
+          endLine: 134,
+          body: "B: D: sdfdsfdsf",
+        },
+      ],
+    });
+
+    expect(prompt).toContain("1. submodule-1/docs/local-agent-sandbox-note.md:3 (added)");
+    expect(prompt).toContain("1. submodule-1/README.md:134 (added)");
+  });
 });

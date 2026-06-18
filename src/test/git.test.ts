@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getChangedFileReferenceCounts, getChangedFileReferenceGraph, isReviewableFilePath, mergeChangedPaths, parseNameStatus, parseNumStat, parseUntrackedPaths } from "../git.js";
+import { getChangedFileReferenceCounts, getChangedFileReferenceGraph, isReviewableFilePath, mergeChangedPaths, parseGitmodulesPaths, parseNameStatus, parseNumStat, parseUntrackedPaths } from "../git.js";
 
 describe("git helpers", () => {
   it("parses modified, added, deleted, and renamed files", () => {
@@ -43,6 +43,13 @@ describe("git helpers", () => {
       ["src/app.ts", { additions: 12, deletions: 3 }],
       ["assets/generated.bin", { additions: 0, deletions: 0 }],
     ]));
+  });
+
+  it("parses submodule paths from git config output", () => {
+    expect(parseGitmodulesPaths([
+      "submodule.docs.path docs",
+      "submodule.libs/core.path libs/core",
+    ].join("\n"))).toEqual(["docs", "libs/core"]);
   });
 
   it("counts changed files referenced by other changed files", () => {

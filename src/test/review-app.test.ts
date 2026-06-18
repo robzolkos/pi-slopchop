@@ -2,6 +2,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import type { DiffReviewComment, ReviewFile, ReviewState } from "../types.js";
+
+type TestTheme = Parameters<typeof buildFooterLines>[0];
 import { buildCommentPanelEmptyStateLines, buildCommentPanelTextLines, buildDisplayRows, buildEditorLaunchCommand, buildFooterLines, buildHelpPanelLines, buildSideBySideDisplayRows, formatFocusStatus, formatPaneTitle, formatSelectedLineTargetLabel, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getSideBySidePairedLineTarget, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
 
 function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
@@ -236,7 +238,7 @@ describe("buildEditorLaunchCommand", () => {
   });
 });
 
-const plainTheme = {
+const plainTheme: TestTheme = {
   fg(_color: string, text: string) { return text; },
   bg(_color: string, text: string) { return text; },
 };
@@ -257,17 +259,24 @@ describe("focused panel feedback", () => {
 
 describe("action and shortcut help rendering", () => {
   it("keeps the persistent footer concise and panel-scoped", () => {
-    const lines = buildFooterLines(plainTheme as any, "Tab focus • / search • ? help • 1/2/3 scopes • h hide comments • o open in $EDITOR • s submit • Esc exit", 80);
+    const lines = buildFooterLines(plainTheme, "Tab focus • / search • ? help • 1/2/3 scopes • h hide comments • o open in $EDITOR • s submit • Esc exit", 80);
 
     expect(lines).toHaveLength(2);
     expect(lines[1]).not.toContain("navigator:");
     expect(lines[1]).not.toContain("diff:");
     expect(lines[1]).not.toContain("comments:");
+    expect(lines[1]).not.toContain("b return");
     expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
   });
 
+  it("mentions the return shortcut only while inside a nested submodule review", () => {
+    const lines = buildFooterLines(plainTheme, "Reviewing submodule submodule-1. Press b to go back.", 120, true);
+
+    expect(lines[1]).toContain("b return");
+  });
+
   it("wraps full help text to the comments sidebar width", () => {
-    const lines = buildHelpPanelLines(plainTheme as any, 24, [
+    const lines = buildHelpPanelLines(plainTheme, 24, [
       { id: "explain-added", key: "e", label: "explain", intent: "discuss", side: "added", text: "Explain what this code is doing." },
     ], "/home/user/.pi/agent/extensions/slopchop.json");
 
@@ -278,7 +287,7 @@ describe("action and shortcut help rendering", () => {
   });
 
   it("wraps comments-panel guidance to the comments width", () => {
-    const lines = buildCommentPanelEmptyStateLines(plainTheme as any, 24);
+    const lines = buildCommentPanelEmptyStateLines(plainTheme, 24);
 
     expect(lines.join(" ")).toContain("Use f/d/c");
     expect(lines.length).toBeGreaterThan(2);
@@ -286,7 +295,7 @@ describe("action and shortcut help rendering", () => {
   });
 
   it("accounts for comment preview indentation when wrapping", () => {
-    const lines = buildCommentPanelTextLines(plainTheme as any, 24, "This preview wraps within the comments panel content area.", "muted", "   ", 3);
+    const lines = buildCommentPanelTextLines(plainTheme, 24, "This preview wraps within the comments panel content area.", "muted", "   ", 3);
 
     expect(lines.length).toBe(3);
     expect(lines.every((line) => line.startsWith("   "))).toBe(true);
