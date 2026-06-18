@@ -36,7 +36,7 @@ import { getShortcutConfigPath, getShortcutsForSide, type CommentShortcut } from
 import { filterFilesBySearch } from "../search.js";
 import { highlightJsonLine, highlightMarkdownLine } from "../theme-highlight.js";
 import type { CommentIntent, DiffReviewComment, ReviewFile, ReviewFileContents, ReviewLineTarget, ReviewResult, ReviewScope, ReviewState, ReviewSubmoduleInfo } from "../types.js";
-import { formatIntentLabel, formatScopeLabel, getReviewFileDisplayPath, getSubmoduleInfo, isSubmoduleReviewFile, joinReviewPath } from "../types.js";
+import { formatIntentLabel, formatScopeLabel, getReviewFileDisplayPath, getSubmoduleInfo, hasExactSubmoduleRange, isSubmoduleReviewFile, joinReviewPath } from "../types.js";
 
 interface LoadedEntryReady {
   status: "ready";
@@ -1111,11 +1111,6 @@ class ReviewApp {
 
     if (!submodule.available) {
       this.setMessage(submodule.unavailableReason ?? `Submodule ${file.path} is not available locally.`);
-      this.requestRender();
-      return;
-    }
-    if (submodule.oldSha == null || submodule.newSha == null) {
-      this.setMessage(`Submodule ${file.path} needs both original and modified commits for nested review.`);
       this.requestRender();
       return;
     }
@@ -2215,10 +2210,12 @@ class ReviewApp {
       lines.push(this.theme.fg("accent", `Submodule: ${file.path}`));
       lines.push(this.theme.fg("muted", `${submodule.oldSha ?? "new"} → ${submodule.newSha ?? "deleted"}`));
       lines.push("");
-      if (submodule.available && submodule.oldSha != null && submodule.newSha != null) {
+      if (!submodule.available) {
+        lines.push(this.theme.fg("warning", submodule.unavailableReason ?? "Nested review is unavailable for this submodule change."));
+      } else if (hasExactSubmoduleRange(submodule)) {
         lines.push(this.theme.fg("dim", "Press Enter or → to review the nested commit range."));
       } else {
-        lines.push(this.theme.fg("warning", submodule.unavailableReason ?? "Nested review is unavailable for this submodule change."));
+        lines.push(this.theme.fg("dim", "Press Enter or → to review nested working tree changes."));
       }
       lines.push(this.theme.fg("dim", "Press l to comment on the submodule pointer change."));
       if (this.frameStack.length > 0) lines.push(this.theme.fg("dim", `Press ${GO_BACK_SHORTCUT} to return to the parent review.`));

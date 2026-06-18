@@ -138,6 +138,12 @@ export function getSubmoduleInfo(file: ReviewFile | null | undefined, scope: Rev
   return file?.submodule?.[scope] ?? null;
 }
 
+export function hasExactSubmoduleRange(
+  submodule: ReviewSubmoduleInfo,
+): submodule is ReviewSubmoduleInfo & { oldSha: string; newSha: string } {
+  return submodule.oldSha != null && submodule.newSha != null && submodule.oldSha !== submodule.newSha;
+}
+
 export function joinReviewPath(prefix: string | undefined, path: string): string {
   return prefix == null || prefix.length === 0 ? path : `${prefix}/${path}`;
 }
