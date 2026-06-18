@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { getChangedFileReferenceCounts, getChangedFileReferenceGraph, isReviewableFilePath, mergeChangedPaths, parseNameStatus, parseNumStat, parseUntrackedPaths } from "../git.js";
+import { describe, expect, it, vi } from "vitest";
+import { getChangedFileReferenceCounts, getChangedFileReferenceGraph, getSubmoduleReviewWindowData, isReviewableFilePath, loadReviewFileContents, mergeChangedPaths, parseNameStatus, parseNumStat, parseRawDiff, parseUntrackedPaths } from "../git.js";
 
 describe("git helpers", () => {
   it("parses modified, added, deleted, and renamed files", () => {
@@ -43,6 +43,82 @@ describe("git helpers", () => {
       ["src/app.ts", { additions: 12, deletions: 3 }],
       ["assets/generated.bin", { additions: 0, deletions: 0 }],
     ]));
+  });
+
+  it("parses raw submodule gitlink changes with old and new commits", () => {
+    const output = ":160000 160000 abc1234 def5678 M\0packages/app\0";
+
+    expect(parseRawDiff(output)).toEqual([
+      {
+        status: "modified",
+        oldPath: "packages/app",
+        newPath: "packages/app",
+        oldMode: "160000",
+        newMode: "160000",
+        oldSha: "abc1234",
+        newSha: "def5678",
+      },
+    ]);
+  });
+
+  it("builds nested submodule review data from the explicit parent gitlink range", async () => {
+    const exec = vi.fn(async (_command: string, args: string[]) => {
+      const joined = args.join(" ");
+      if (joined === "diff --find-renames -M --name-status old-sha new-sha --") return { code: 0, stdout: "M\tsrc/app.ts\n", stderr: "" };
+      if (joined === "diff --find-renames -M --raw -z old-sha new-sha --") return { code: 0, stdout: "", stderr: "" };
+      if (joined === "diff --find-renames -M --numstat old-sha new-sha --") return { code: 0, stdout: "4\t2\tsrc/app.ts\n", stderr: "" };
+      if (joined === "show new-sha:src/app.ts") return { code: 0, stdout: "export const app = true;\n", stderr: "" };
+      return { code: 1, stdout: "", stderr: "unexpected command" };
+    });
+
+    const data = await getSubmoduleReviewWindowData({ exec } as never, "/repo/packages/app", "old-sha", "new-sha");
+
+    expect(data.files).toHaveLength(1);
+    expect(data.files[0]).toMatchObject({
+      path: "src/app.ts",
+      inGitDiff: false,
+      inLastCommit: false,
+      inAllFiles: true,
+      allFiles: {
+        oldPath: "src/app.ts",
+        newPath: "src/app.ts",
+        originalRevision: "old-sha",
+        modifiedRevision: "new-sha",
+        additions: 4,
+        deletions: 2,
+      },
+    });
+  });
+
+  it("loads explicit range contents from comparison revisions", async () => {
+    const exec = vi.fn(async (_command: string, args: string[]) => {
+      const joined = args.join(" ");
+      if (joined === "show old-sha:src/app.ts") return { code: 0, stdout: "old\n", stderr: "" };
+      if (joined === "show new-sha:src/app.ts") return { code: 0, stdout: "new\n", stderr: "" };
+      return { code: 1, stdout: "", stderr: "unexpected command" };
+    });
+
+    await expect(loadReviewFileContents({ exec } as never, "/repo/packages/app", {
+      id: "src/app.ts",
+      path: "src/app.ts",
+      worktreeStatus: null,
+      hasWorkingTreeFile: true,
+      inGitDiff: false,
+      inLastCommit: false,
+      inAllFiles: true,
+      gitDiff: null,
+      lastCommit: null,
+      allFiles: {
+        status: "modified",
+        oldPath: "src/app.ts",
+        newPath: "src/app.ts",
+        displayPath: "src/app.ts",
+        hasOriginal: true,
+        hasModified: true,
+        originalRevision: "old-sha",
+        modifiedRevision: "new-sha",
+      },
+    }, "all-files")).resolves.toEqual({ originalContent: "old\n", modifiedContent: "new\n" });
   });
 
   it("counts changed files referenced by other changed files", () => {
