@@ -84,6 +84,7 @@ interface ReviewAppOptions {
   loadSubmoduleReviewData: (submodule: ReviewSubmoduleInfo) => Promise<{ repoRoot: string; files: ReviewFile[] }>;
   commentShortcuts: CommentShortcut[];
   notify: ExtensionContext["ui"]["notify"];
+  plainTextHost: boolean;
 }
 
 interface MousePaneBounds {
@@ -397,20 +398,29 @@ export function formatFocusStatus(focus: ReviewState["focus"]): string {
   }
 }
 
-function renderBox(title: string, width: number, height: number, theme: Theme, lines: string[], focused = false): string[] {
+const HEADLESS_SELECTED_ANSI = "\x1b[38;5;255;48;5;240m";
+
+export function applySelectedBackground(theme: Theme, text: string, plainTextHost = false): string {
+  return plainTextHost ? `${HEADLESS_SELECTED_ANSI}${text}\x1b[0m` : theme.bg("selectedBg", text);
+}
+
+export function renderBox(title: string, width: number, height: number, theme: Theme, lines: string[], focused = false, plainTextHost = false): string[] {
   const innerWidth = Math.max(1, width - 2);
   const innerHeight = Math.max(1, height - 2);
   const titleText = truncateToWidth(` ${formatPaneTitle(title, focused)} `, Math.max(1, innerWidth - 2), "", false);
   const leftPad = Math.max(0, Math.floor((innerWidth - visibleWidth(titleText)) / 2));
   const rightPad = Math.max(0, innerWidth - visibleWidth(titleText) - leftPad);
   const borderColor = focused ? "accent" : "border";
-  const top = theme.fg(borderColor, `┌${repeat("─", leftPad)}${titleText}${repeat("─", rightPad)}┐`);
-  const bottom = theme.fg(borderColor, `└${repeat("─", innerWidth)}┘`);
+  const ascii = plainTextHost;
+  const horizontal = ascii ? "-" : "─";
+  const vertical = ascii ? "|" : "│";
+  const top = theme.fg(borderColor, `${ascii ? "+" : "┌"}${repeat(horizontal, leftPad)}${titleText}${repeat(horizontal, rightPad)}${ascii ? "+" : "┐"}`);
+  const bottom = theme.fg(borderColor, `${ascii ? "+" : "└"}${repeat(horizontal, innerWidth)}${ascii ? "+" : "┘"}`);
   const body: string[] = [];
 
   for (let i = 0; i < innerHeight; i += 1) {
     const line = padLine(lines[i] ?? "", innerWidth);
-    body.push(`${theme.fg(borderColor, "│")}${line}${theme.fg(borderColor, "│")}`);
+    body.push(`${theme.fg(borderColor, vertical)}${line}${theme.fg(borderColor, vertical)}`);
   }
 
   return [top, ...body, bottom];
@@ -419,7 +429,7 @@ function renderBox(title: string, width: number, height: number, theme: Theme, l
 const MODAL_INNER_PADDING_X = 2;
 const MODAL_INNER_PADDING_Y = 1;
 
-function renderOuterFrame(
+export function renderOuterFrame(
   width: number,
   height: number,
   theme: Theme,
@@ -436,7 +446,9 @@ function renderOuterFrame(
   const titleText = truncateToWidth(` ${title} `, Math.max(1, innerWidth - 2), "", false);
   const leftPad = 1;
   const rightPad = Math.max(0, innerWidth - visibleWidth(titleText) - leftPad);
-  const top = theme.fg(color, `┌${repeat("─", leftPad)}${titleText}${repeat("─", rightPad)}┐`);
+  const top = theme.fg(color, title.length === 0
+    ? `┌${repeat("─", innerWidth)}┐`
+    : `┌${repeat("─", leftPad)}${titleText}${repeat("─", rightPad)}┐`);
   const bottom = theme.fg(color, `└${repeat("─", innerWidth)}┘`);
   const body: string[] = [];
   const sidePadding = " ".repeat(paddingX);
@@ -862,7 +874,7 @@ class ReviewApp {
     this.searchBuffer = this.state.searchQuery;
 
     const editorTheme: EditorTheme = {
-      borderColor: (text) => this.theme.fg("accent", text),
+      borderColor: (text) => this.theme.fg("accent", this.options.plainTextHost ? text.replaceAll("─", "-") : text),
       selectList: {
         selectedPrefix: (text) => this.theme.fg("accent", text),
         selectedText: (text) => this.theme.fg("accent", text),
@@ -969,7 +981,7 @@ class ReviewApp {
     const wrapped = wrapAnsiText(contentText, Math.max(1, width - 2), wrapLines);
     const rendered = wrapped.map((line) => {
       const paddedLine = padLine(line, Math.max(1, width - 2));
-      if (isSelected) return this.theme.bg("selectedBg", paddedLine);
+      if (isSelected) return applySelectedBackground(this.theme, paddedLine, this.options.plainTextHost);
       if (rowKind === "added" || rowKind === "removed") return applyLineBackground(this.theme, paddedLine, tone);
       return paddedLine;
     });
@@ -2087,7 +2099,7 @@ class ReviewApp {
     if (files.length === 0) {
       lines.push(this.theme.fg("warning", "No files in this scope."));
       lines.push(this.theme.fg("dim", "Try another scope or clear search."));
-      return renderBox("Navigator", width, height, this.theme, lines, this.state.focus === "navigator");
+      return renderBox("Navigator", width, height, this.theme, lines, this.state.focus === "navigator", this.options.plainTextHost);
     }
 
     const maxBody = Math.max(1, height - 4);
@@ -2118,10 +2130,11 @@ class ReviewApp {
       const pathText = active || (!relatedFilterActive && related)
         ? this.theme.fg("accent", shortenedPath)
         : this.theme.fg("text", shortenedPath);
-      lines.push(`${prefixText}${pathText}${submoduleMarker}${changeMarker}${commentMarker}`);
+      const row = `${prefixText}${pathText}${submoduleMarker}${changeMarker}${commentMarker}`;
+      lines.push(active ? applySelectedBackground(this.theme, padLine(row, width - 2), this.options.plainTextHost) : row);
     }
 
-    return renderBox("Navigator", width, height, this.theme, lines, this.state.focus === "navigator");
+    return renderBox("Navigator", width, height, this.theme, lines, this.state.focus === "navigator", this.options.plainTextHost);
   }
 
   private renderSideBySideCellLines(cell: SideBySideCell | null, width: number, language: string | undefined, selected: boolean, fileId: string): string[] {
@@ -2145,7 +2158,7 @@ class ReviewApp {
 
     return wrapAnsiText(contentText, Math.max(1, width), this.state.wrapLines).map((line) => {
       const paddedLine = padLine(line, Math.max(1, width));
-      if (selected) return this.theme.bg("selectedBg", paddedLine);
+      if (selected) return applySelectedBackground(this.theme, paddedLine, this.options.plainTextHost);
       if (cell.tone === "added" || cell.tone === "removed") return applyLineBackground(this.theme, paddedLine, cell.tone);
       return paddedLine;
     });
@@ -2202,7 +2215,7 @@ class ReviewApp {
     const lines: string[] = [];
     if (file == null) {
       lines.push(this.theme.fg("warning", "No file selected."));
-      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff");
+      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff", this.options.plainTextHost);
     }
 
     const entry = this.getEntry(file.id, this.state.activeScope);
@@ -2224,7 +2237,7 @@ class ReviewApp {
       }
       lines.push(this.theme.fg("dim", "Press l to comment on the submodule pointer change."));
       if (this.frameStack.length > 0) lines.push(this.theme.fg("dim", `Press ${GO_BACK_SHORTCUT} to return to the parent review.`));
-      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff");
+      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff", this.options.plainTextHost);
     }
 
     const comparison = getScopeComparison(file, this.state.activeScope);
@@ -2239,17 +2252,17 @@ class ReviewApp {
       }
       lines.push("");
       lines.push(this.theme.fg("dim", "Press l to add a file-level comment."));
-      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff");
+      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff", this.options.plainTextHost);
     }
 
     if (entry == null || entry.status === "loading") {
       lines.push(this.theme.fg("muted", "Loading file contents…"));
-      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff");
+      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff", this.options.plainTextHost);
     }
     if (entry.status === "error") {
       lines.push(this.theme.fg("error", "Could not load file contents."));
       lines.push(this.theme.fg("muted", entry.error));
-      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff");
+      return renderBox("Diff", width, height, this.theme, lines, this.state.focus === "diff", this.options.plainTextHost);
     }
 
     const diff = this.getDisplayDiff(file.id, this.state.activeScope)!;
@@ -2320,11 +2333,11 @@ class ReviewApp {
     if (selectedIndex >= this.diffScroll + maxBody) this.diffScroll = selectedIndex - maxBody + 1;
     lines.push(...rendered.slice(this.diffScroll, this.diffScroll + maxBody));
 
-    return renderBox(`Diff ${diff.hunks.length > 0 ? `(${diff.hunks.length} hunk${diff.hunks.length === 1 ? "" : "s"})` : ""}`.trim(), width, height, this.theme, lines, this.state.focus === "diff");
+    return renderBox(`Diff ${diff.hunks.length > 0 ? `(${diff.hunks.length} hunk${diff.hunks.length === 1 ? "" : "s"})` : ""}`.trim(), width, height, this.theme, lines, this.state.focus === "diff", this.options.plainTextHost);
   }
 
   private renderHelpPanel(width: number, height: number): string[] {
-    return renderBox("Help", width, height, this.theme, buildHelpPanelLines(this.theme, width, this.getAvailableShortcuts(), getShortcutConfigPath()), true);
+    return renderBox("Help", width, height, this.theme, buildHelpPanelLines(this.theme, width, this.getAvailableShortcuts(), getShortcutConfigPath()), true, this.options.plainTextHost);
   }
 
   private renderCancelConfirmation(): string[] {
@@ -2337,7 +2350,7 @@ class ReviewApp {
       this.theme.fg("muted", "Enter keep reviewing"),
       this.theme.fg("muted", "Esc keep reviewing • Ctrl+C keep reviewing"),
     ];
-    return renderBox("Discard review", 50, 7, this.theme, lines, true)
+    return renderBox("Discard review", 50, 7, this.theme, lines, true, this.options.plainTextHost)
       .map((line) => this.theme.bg("toolPendingBg", line));
   }
 
@@ -2357,7 +2370,7 @@ class ReviewApp {
 
       if (shortcuts.length === 0) {
         lines.push(this.theme.fg("warning", "No template shortcuts available."));
-        return renderBox("Template shortcuts", width, height, this.theme, lines, true);
+        return renderBox("Template shortcuts", width, height, this.theme, lines, true, this.options.plainTextHost);
       }
 
       const groups = [
@@ -2381,7 +2394,7 @@ class ReviewApp {
         }
       });
 
-      return renderBox("Template shortcuts", width, height, this.theme, lines, true);
+      return renderBox("Template shortcuts", width, height, this.theme, lines, true, this.options.plainTextHost);
     }
 
     if (this.helpMode) {
@@ -2395,12 +2408,11 @@ class ReviewApp {
           ? "File comment"
           : `${formatLineSideLabel(this.editTarget.side)} line ${formatLineRangeLabel(this.editTarget.startLine, this.editTarget.endLine)}`));
       lines.push(`${getIntentBadge(this.theme, this.editTarget.intent)} ${this.theme.fg("dim", "Tab toggle")}`);
-      lines.push(this.theme.fg("dim", "Enter save • Shift+Enter newline"));
-      lines.push(this.theme.fg("dim", "Esc cancel"));
-      lines.push("");
       const editorLines = this.editor.render(Math.max(10, width - 4));
       lines.push(...editorLines.map((line) => ` ${line}`));
-      return renderBox("Edit comment", width, height, this.theme, lines, true);
+      lines.push(this.theme.fg("dim", "Enter save • Shift+Enter newline"));
+      lines.push(this.theme.fg("dim", "Esc cancel"));
+      return renderBox("Edit comment", width, height, this.theme, lines, true, this.options.plainTextHost);
     }
 
     lines.push(this.theme.fg("muted", `${this.state.draft.comments.length} scoped comment${this.state.draft.comments.length === 1 ? "" : "s"}`));
@@ -2422,7 +2434,7 @@ class ReviewApp {
 
     if (items.length === 0) {
       lines.push(...buildCommentPanelEmptyStateLines(this.theme, width));
-      return renderBox("Comments", width, height, this.theme, lines, this.state.focus === "comments");
+      return renderBox("Comments", width, height, this.theme, lines, this.state.focus === "comments", this.options.plainTextHost);
     }
 
     const maxBody = Math.max(1, height - 5);
@@ -2447,7 +2459,7 @@ class ReviewApp {
       lines.push("");
     }
 
-    return renderBox("Comments", width, height, this.theme, lines, this.state.focus === "comments");
+    return renderBox("Comments", width, height, this.theme, lines, this.state.focus === "comments", this.options.plainTextHost);
   }
 
   render(width: number): string[] {
@@ -2455,8 +2467,11 @@ class ReviewApp {
     const terminalRows = this.tui?.terminal?.rows ?? 28;
     const totalHeight = Math.max(20, terminalRows - 4);
     const frameColor = "accent" as const;
-    const frameInnerWidth = Math.max(20, this.lastWidth - 2 - MODAL_INNER_PADDING_X * 2);
-    const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
+    const plainTextHost = this.options.plainTextHost;
+    const framePaddingX = plainTextHost ? 0 : MODAL_INNER_PADDING_X;
+    const framePaddingY = plainTextHost ? 0 : MODAL_INNER_PADDING_Y;
+    const frameInnerWidth = Math.max(20, this.lastWidth - 2 - framePaddingX * 2);
+    const frameInnerHeight = Math.max(10, totalHeight - 2 - framePaddingY * 2);
 
     const stackPanes = shouldStackPanes(frameInnerWidth);
     const headerLineCount = this.frameStack.length > 0 ? 2 : 1;
@@ -2464,8 +2479,8 @@ class ReviewApp {
     const terminalCols = this.tui?.terminal?.columns ?? this.lastWidth;
     const overlayOriginCol = Math.max(0, Math.floor((terminalCols - this.lastWidth) / 2));
     const overlayOriginRow = Math.max(0, Math.floor((terminalRows - totalHeight) / 2));
-    const bodyTop = overlayOriginRow + 1 + MODAL_INNER_PADDING_Y + headerLineCount;
-    const contentLeft = overlayOriginCol + 1 + MODAL_INNER_PADDING_X;
+    const bodyTop = overlayOriginRow + 1 + framePaddingY + headerLineCount;
+    const contentLeft = overlayOriginCol + 1 + framePaddingX;
 
     const layoutStatus = stackPanes ? "stacked layout • " : "";
     const promptStatus = this.shortcutMode
@@ -2482,7 +2497,7 @@ class ReviewApp {
       const active = this.state.activeScope === scope;
       const count = getScopedFiles(this.files, scope).length;
       const text = `${index + 1}:${formatScopeLabel(scope)}(${count})`;
-      return active ? this.theme.bg("selectedBg", this.theme.fg("text", ` ${text} `)) : this.theme.fg("muted", ` ${text} `);
+      return active ? applySelectedBackground(this.theme, this.theme.fg("text", ` ${text} `), this.options.plainTextHost) : this.theme.fg("muted", ` ${text} `);
     }).join(" ");
 
     const breadcrumbLabels = [...this.frameStack.map((frame) => formatFrameLabel(frame.repoRoot)), formatFrameLabel(this.repoRoot)];
@@ -2534,7 +2549,16 @@ class ReviewApp {
 
     const footer = buildFooterLines(this.theme, promptStatus, frameInnerWidth);
 
-    const rendered = renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
+    const rendered = renderOuterFrame(
+      this.lastWidth,
+      totalHeight,
+      this.theme,
+      plainTextHost ? "" : "slopchop",
+      [...headerLines, ...body, ...footer],
+      frameColor,
+      framePaddingX,
+      framePaddingY,
+    );
     if (!this.confirmCancel) return rendered;
     return renderCenteredOverlay(rendered, this.renderCancelConfirmation(), this.lastWidth, totalHeight);
   }
@@ -2542,10 +2566,10 @@ class ReviewApp {
 
 export async function runReviewApp(
   ctx: ExtensionContext,
-  options: Omit<ReviewAppOptions, "notify">,
+  options: Omit<ReviewAppOptions, "notify" | "plainTextHost">,
 ): Promise<{ result: ReviewResult; files: ReviewFile[] }> {
   return ctx.ui.custom<{ result: ReviewResult; files: ReviewFile[] }>(
-    (tui, theme, _kb, done) => new ReviewApp(tui, theme, done, { ...options, notify: ctx.ui.notify.bind(ctx.ui) }),
+    (tui, theme, _kb, done) => new ReviewApp(tui, theme, done, { ...options, notify: ctx.ui.notify.bind(ctx.ui), plainTextHost: (ctx as ExtensionContext & { mode?: string }).mode === "rpc" }),
     {
       overlay: true,
       overlayOptions: {
