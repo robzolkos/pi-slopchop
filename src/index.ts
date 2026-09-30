@@ -22,16 +22,17 @@ export default function slopReviewExtension(pi: ExtensionAPI) {
 
     activeReview = true;
     try {
-      const { repoRoot, files } = await getReviewWindowData(pi, ctx.cwd);
+      const { vcs, repoRoot, files } = await getReviewWindowData(pi, ctx.cwd);
       const shortcutConfig = loadCommentShortcuts();
       if (files.length === 0) {
-        ctx.ui.notify("No reviewable files found for git diff, last commit, or all files.", "info");
+        ctx.ui.notify("No reviewable changes found.", "info");
         return;
       }
 
       notifyShortcutWarnings(ctx, shortcutConfig.warnings);
 
       const { result, files: submittedFiles } = await runReviewApp(ctx, {
+        vcs,
         files,
         repoRoot,
         loadFileContents: (activeRepoRoot, file, scope) => loadReviewFileContents(pi, activeRepoRoot, file, scope),

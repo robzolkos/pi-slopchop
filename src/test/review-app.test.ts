@@ -2,6 +2,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import type { DiffReviewComment, ReviewFile, ReviewState } from "../types.js";
+import { formatScopeLabel } from "../types.js";
 import { buildCommentPanelEmptyStateLines, buildCommentPanelTextLines, buildDisplayRows, buildEditorLaunchCommand, buildFooterLines, buildHelpPanelLines, buildSideBySideDisplayRows, formatFocusStatus, formatPaneTitle, formatSelectedLineTargetLabel, getCancelAction, getDraftCommentCount, getEditorLineForTarget, getHalfPageStep, getPaneLayout, getRelatedFileMarker, getRelatedFilePaths, getSideBySidePairedLineTarget, getStackedPaneLayout, parseMouseWheelInput, renderCenteredOverlay, shouldStackPanes } from "../ui/review-app.js";
 
 function makeFile(path: string, flags?: Partial<ReviewFile>): ReviewFile {
@@ -49,6 +50,14 @@ const lineComment: DiffReviewComment = {
   endLine: 2,
   body: "Rename this.",
 };
+
+describe("scope labels", () => {
+  it("uses jj change terminology without changing git labels", () => {
+    expect((["git-diff", "last-commit", "all-files"] as const).map((scope) => formatScopeLabel(scope, "jj")))
+      .toEqual(["working copy (@)", "parent change (@-)", "change stack"]);
+    expect(formatScopeLabel("git-diff", "git")).toBe("git diff");
+  });
+});
 
 describe("buildDisplayRows", () => {
   it("keeps deleted and added rows independently commentable when line numbers overlap", () => {

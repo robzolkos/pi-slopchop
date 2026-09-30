@@ -22,9 +22,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install jj for jj repo tests
+        run: |
+          tmp_dir=$(mktemp -d)
+          curl -fsSL https://github.com/jj-vcs/jj/releases/download/v0.43.0/jj-v0.43.0-x86_64-unknown-linux-musl.tar.gz | tar -xz -C "$tmp_dir" jj
+          sudo install "$tmp_dir/jj" /usr/local/bin/jj
+          jj --version
+
       - name: Typecheck
         run: npm run typecheck
-
       - name: Test
         run: npm test
 

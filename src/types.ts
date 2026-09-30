@@ -1,3 +1,4 @@
+export type Vcs = "git" | "jj";
 export type ReviewScope = "git-diff" | "last-commit" | "all-files";
 
 export type ChangeStatus = "modified" | "added" | "deleted" | "renamed";
@@ -115,7 +116,14 @@ export interface ReviewCancelPayload {
 
 export type ReviewResult = ReviewSubmitPayload | ReviewCancelPayload;
 
-export function formatScopeLabel(scope: ReviewScope): string {
+export function formatScopeLabel(scope: ReviewScope, vcs: Vcs = "git"): string {
+  if (vcs === "jj") {
+    switch (scope) {
+      case "git-diff": return "working copy (@)";
+      case "last-commit": return "parent change (@-)";
+      case "all-files": return "change stack";
+    }
+  }
   switch (scope) {
     case "git-diff": return "git diff";
     case "last-commit": return "last commit";

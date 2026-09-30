@@ -35,7 +35,7 @@ import { detectPiLanguage, highlightCodeLineWithPi } from "../pi-render.js";
 import { getShortcutConfigPath, getShortcutsForSide, type CommentShortcut } from "../shortcuts.js";
 import { filterFilesBySearch } from "../search.js";
 import { highlightJsonLine, highlightMarkdownLine } from "../theme-highlight.js";
-import type { CommentIntent, DiffReviewComment, ReviewFile, ReviewFileContents, ReviewLineTarget, ReviewResult, ReviewScope, ReviewState, ReviewSubmoduleInfo } from "../types.js";
+import type { CommentIntent, DiffReviewComment, ReviewFile, ReviewFileContents, ReviewLineTarget, ReviewResult, ReviewScope, ReviewState, ReviewSubmoduleInfo, Vcs } from "../types.js";
 import { formatIntentLabel, formatScopeLabel, getReviewFileDisplayPath, getSubmoduleInfo, hasExactSubmoduleRange, isSubmoduleReviewFile, joinReviewPath } from "../types.js";
 
 interface LoadedEntryReady {
@@ -65,6 +65,7 @@ type CommentPanelItem =
   | { kind: "comment"; comment: DiffReviewComment };
 
 interface ReviewFrame {
+  vcs: Vcs;
   repoRoot: string;
   pathPrefix?: string;
   files: ReviewFile[];
@@ -78,10 +79,11 @@ interface ReviewFrame {
 }
 
 interface ReviewAppOptions {
+  vcs: Vcs;
   files: ReviewFile[];
   repoRoot: string;
   loadFileContents: (repoRoot: string, file: ReviewFile, scope: ReviewScope) => Promise<ReviewFileContents>;
-  loadSubmoduleReviewData: (submodule: ReviewSubmoduleInfo) => Promise<{ repoRoot: string; files: ReviewFile[] }>;
+  loadSubmoduleReviewData: (submodule: ReviewSubmoduleInfo) => Promise<{ vcs: Vcs; repoRoot: string; files: ReviewFile[] }>;
   commentShortcuts: CommentShortcut[];
   notify: ExtensionContext["ui"]["notify"];
 }
@@ -816,6 +818,7 @@ function getCommentableLineTargets(diff: StructuredDiff): ReviewLineTarget[] {
 class ReviewApp {
   focused = false;
 
+  private vcs: Vcs;
   private repoRoot: string;
   private files: ReviewFile[];
   private state: ReviewState;
@@ -856,6 +859,7 @@ class ReviewApp {
     private readonly done: (value: { result: ReviewResult; files: ReviewFile[] }) => void,
     private readonly options: ReviewAppOptions,
   ) {
+    this.vcs = options.vcs;
     this.repoRoot = options.repoRoot;
     this.files = options.files;
     this.state = ensureActiveFile(createInitialReviewState(this.files), this.files);
@@ -993,6 +997,7 @@ class ReviewApp {
 
   private saveCurrentFrame(): ReviewFrame {
     return {
+      vcs: this.vcs,
       repoRoot: this.repoRoot,
       pathPrefix: this.currentPathPrefix(),
       files: this.files,
@@ -1007,6 +1012,7 @@ class ReviewApp {
   }
 
   private restoreFrame(frame: ReviewFrame): void {
+    this.vcs = frame.vcs;
     this.repoRoot = frame.repoRoot;
     this.files = frame.files;
     this.state = frame.state;
@@ -1149,6 +1155,7 @@ class ReviewApp {
       }));
 
       this.frameStack.push(currentFrame);
+      this.vcs = reviewData.vcs;
       this.repoRoot = reviewData.repoRoot;
       this.files = prefixedFiles;
       this.state = ensureActiveFile(createInitialReviewState(prefixedFiles), prefixedFiles);
@@ -1622,7 +1629,7 @@ class ReviewApp {
 
   private openShortcutMode(): void {
     if (this.state.activeScope === "all-files") {
-      this.setMessage("Template shortcuts are only available in git diff and last commit scopes.");
+      this.setMessage(`Template shortcuts are only available in ${formatScopeLabel("git-diff", this.vcs)} and ${formatScopeLabel("last-commit", this.vcs)} scopes.`);
       this.requestRender();
       return;
     }
@@ -1707,7 +1714,7 @@ class ReviewApp {
     }
 
     if (this.state.activeScope !== "all-files") {
-      this.setMessage("Related filter is only available in the all files scope.");
+      this.setMessage(`Related filter is only available in the ${formatScopeLabel("all-files", this.vcs)} scope.`);
       this.requestRender();
       return;
     }
@@ -2207,7 +2214,7 @@ class ReviewApp {
 
     const entry = this.getEntry(file.id, this.state.activeScope);
     lines.push(this.theme.fg("muted", getScopeDisplayPath(file, this.state.activeScope)));
-    lines.push(this.theme.fg("dim", `${formatScopeLabel(this.state.activeScope)} • view ${formatDiffViewModeLabel(this.diffViewMode)} • wrap ${this.state.wrapLines ? "on" : "off"}${this.state.activeScope === "all-files" ? "" : ` • unchanged ${this.state.hideUnchanged ? "hidden" : "shown"}`}`));
+    lines.push(this.theme.fg("dim", `${formatScopeLabel(this.state.activeScope, this.vcs)} • view ${formatDiffViewModeLabel(this.diffViewMode)} • wrap ${this.state.wrapLines ? "on" : "off"}${this.state.activeScope === "all-files" ? "" : ` • unchanged ${this.state.hideUnchanged ? "hidden" : "shown"}`}`));
     lines.push("");
 
     const submodule = getSubmoduleInfo(file, this.state.activeScope);
@@ -2257,7 +2264,7 @@ class ReviewApp {
     const language = detectPiLanguage(file.path);
     this.state = clampSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets);
     const selectedTarget = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
-    lines[1] = this.theme.fg("dim", `${formatScopeLabel(this.state.activeScope)} • view ${formatDiffViewModeLabel(this.diffViewMode)} • ${formatSelectedLineTargetLabel(selectedTarget)} • wrap ${this.state.wrapLines ? "on" : "off"}${this.state.activeScope === "all-files" ? "" : ` • unchanged ${this.state.hideUnchanged ? "hidden" : "shown"}`}`);
+    lines[1] = this.theme.fg("dim", `${formatScopeLabel(this.state.activeScope, this.vcs)} • view ${formatDiffViewModeLabel(this.diffViewMode)} • ${formatSelectedLineTargetLabel(selectedTarget)} • wrap ${this.state.wrapLines ? "on" : "off"}${this.state.activeScope === "all-files" ? "" : ` • unchanged ${this.state.hideUnchanged ? "hidden" : "shown"}`}`);
     let rendered: string[];
     let selectedIndex = 0;
 
@@ -2481,7 +2488,7 @@ class ReviewApp {
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
       const count = getScopedFiles(this.files, scope).length;
-      const text = `${index + 1}:${formatScopeLabel(scope)}(${count})`;
+      const text = `${index + 1}:${formatScopeLabel(scope, this.vcs)}(${count})`;
       return active ? this.theme.bg("selectedBg", this.theme.fg("text", ` ${text} `)) : this.theme.fg("muted", ` ${text} `);
     }).join(" ");
 

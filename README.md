@@ -12,8 +12,9 @@ The goal is simple: keep terminal-based review within Pi, keep annotations preci
 
 Use `/slopchop` or `/diff` when you want to review and annotate work before sending the agent another turn.
 
-It supports three review scopes:
+It works in both **git** and **jj (Jujutsu)** repositories. In a git repo it reviews the working tree, last commit, and branch changes. In a jj repo the same numbered scopes become the working-copy change (`@`), its parent change (`@-`), and the completed change stack from the default branch through `@-`.
 
+It supports three review scopes:
 - `git diff`
 - `last commit`
 - `all files`
@@ -45,7 +46,7 @@ Then restart Pi or run `/reload`.
 
 ### Run it
 
-Inside a git repo in Pi:
+Inside a git or jj repo in Pi:
 
 ```text
 /slopchop
@@ -65,10 +66,20 @@ alt+s
 
 Configure the shortcut with `globalShortcut` in `~/.pi/agent/extensions/slopchop.json`, then restart Pi or run `/reload`.
 
+### Jujutsu (jj) repos
+
+`/slopchop` also works inside a jj workspace. The numbered scopes use jj-native labels and map to the commit graph as follows:
+
+- `1:working copy (@)` — the current working-copy change compared with its parent (`jj diff`)
+- `2:parent change (@-)` — the parent change compared with its parent (`jj diff -r @-`)
+- `3:change stack` — the merge base of the default branch (`trunk()` if configured, else `main@origin`, `master@origin`, `main`, or `master`) compared with `@-` (`jj diff --from <base> --to @-`)
+
+Scope 3 deliberately excludes `@`: scope 1 already reviews that active change, while scope 3 corresponds to Git's committed branch changes. Renames, additions, deletions, and per-file `+added -deleted` counts (when available) come from jj's own diff machinery. Note that jj does not surface git submodule changes (jj ignores them), so submodule drill-in is a git-only feature for now.
+
 ### Basic flow
 
-1. Run `/slopchop` or `/diff`
-2. Pick a scope:
+1. Run `/slopchop` or `/diff`.
+2. Pick a scope (Git labels shown; jj uses the labels above):
    - `git diff` — review your current uncommitted working tree changes against `HEAD`
    - `last commit` — review the most recent commit against its parent
    - `all files` — review files changed on the current branch compared with the default branch; if there are no changed scopes, falls back to current file contents

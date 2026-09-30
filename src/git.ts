@@ -1,7 +1,19 @@
 import { open, readFile, stat } from "node:fs/promises";
 import { extname, join, posix } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ChangeStatus, ReviewFile, ReviewFileComparison, ReviewFileContents, ReviewScope, ReviewSubmoduleByScope, ReviewSubmoduleInfo } from "./types.js";
+import type { ChangeStatus, ReviewFile, ReviewFileComparison, ReviewFileContents, ReviewScope, ReviewSubmoduleByScope, ReviewSubmoduleInfo, Vcs } from "./types.js";
+export type { Vcs } from "./types.js";
+
+export interface RepoContext {
+  vcs: Vcs;
+  repoRoot: string;
+}
+
+export interface ReviewWindowData {
+  vcs: Vcs;
+  repoRoot: string;
+  files: ReviewFile[];
+}
 
 export interface ChangedPath {
   status: ChangeStatus;
@@ -53,15 +65,60 @@ async function runGitAllowFailure(pi: ExtensionAPI, repoRoot: string, args: stri
   return result.stdout;
 }
 
+async function runJj(pi: ExtensionAPI, repoRoot: string, args: string[]): Promise<string> {
+  const result = await pi.exec("jj", args, { cwd: repoRoot });
+  if (result.code !== 0) {
+    const message = result.stderr.trim() || result.stdout.trim() || `jj ${args.join(" ")} failed`;
+    throw new Error(message);
+  }
+  return result.stdout;
+}
+
+async function runJjAllowFailure(pi: ExtensionAPI, repoRoot: string, args: string[]): Promise<string> {
+  const result = await pi.exec("jj", args, { cwd: repoRoot });
+  if (result.code !== 0) return "";
+  return result.stdout;
+}
+
+/**
+ * Detect which VCS owns the working directory. A jj workspace always contains a
+ * `.jj` directory at its root and may also contain a colocated `.git`, so jj is
+ * probed first and wins whenever it applies.
+ */
+export async function getRepoContext(pi: ExtensionAPI, cwd: string): Promise<RepoContext> {
+  const jjResult = await pi.exec("jj", ["root"], { cwd });
+  if (jjResult.code === 0) {
+    const repoRoot = jjResult.stdout.trim();
+    if (repoRoot.length > 0) return { vcs: "jj", repoRoot };
+  }
+
+  const gitResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd });
+  if (gitResult.code !== 0) {
+    throw new Error("Not inside a git or jj repository.");
+  }
+  return { vcs: "git", repoRoot: gitResult.stdout.trim() };
+}
+
+/**
+ * Classify a known repository root without spawning any process: a jj workspace
+ * always has a `.jj` directory at its root.
+ */
+async function detectVcsAt(repoRoot: string): Promise<Vcs> {
+  try {
+    const entry = await stat(join(repoRoot, ".jj"));
+    if (entry.isDirectory()) return "jj";
+  } catch {
+    // Not a jj workspace; fall through to git.
+  }
+  return "git";
+}
+
 const LARGE_DIFF_MAX_BYTES = 1_000_000;
 const LARGE_DIFF_MAX_CHANGED_LINES = 20_000;
 
 export async function getRepoRoot(pi: ExtensionAPI, cwd: string): Promise<string> {
-  const result = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd });
-  if (result.code !== 0) {
-    throw new Error("Not inside a git repository.");
-  }
-  return result.stdout.trim();
+  const context = await getRepoContext(pi, cwd);
+  return context.repoRoot;
 }
 
 async function hasHead(pi: ExtensionAPI, repoRoot: string): Promise<boolean> {
@@ -619,8 +676,13 @@ async function getBranchBaseRevision(pi: ExtensionAPI, repoRoot: string): Promis
   return result.stdout.trim() || null;
 }
 
-export async function getReviewWindowData(pi: ExtensionAPI, cwd: string): Promise<{ repoRoot: string; files: ReviewFile[] }> {
-  const repoRoot = await getRepoRoot(pi, cwd);
+export async function getReviewWindowData(pi: ExtensionAPI, cwd: string): Promise<ReviewWindowData> {
+  const { vcs, repoRoot } = await getRepoContext(pi, cwd);
+  const data = vcs === "jj" ? await getJjReviewWindowData(pi, repoRoot) : await getGitReviewWindowData(pi, repoRoot);
+  return { vcs, ...data };
+}
+
+async function getGitReviewWindowData(pi: ExtensionAPI, repoRoot: string): Promise<{ repoRoot: string; files: ReviewFile[] }> {
   const repositoryHasHead = await hasHead(pi, repoRoot);
 
   const trackedDiffOutput = repositoryHasHead
@@ -786,7 +848,287 @@ export async function getReviewWindowData(pi: ExtensionAPI, cwd: string): Promis
   return { repoRoot, files };
 }
 
-export async function getSubmoduleReviewWindowData(pi: ExtensionAPI, repoRoot: string, oldSha: string, newSha: string): Promise<{ repoRoot: string; files: ReviewFile[] }> {
+/**
+ * Convert a jj display path such as `{dir1 => dir2}/app.ts` into the concrete
+ * old and new paths of the change.
+ */
+function parseBraceDisplayPath(display: string): { oldPath: string; newPath: string } {
+  const start = display.indexOf("{");
+  const end = display.indexOf("}");
+  if (start >= 0 && end > start) {
+    const prefix = display.slice(0, start);
+    const inner = display.slice(start + 1, end);
+    const suffix = display.slice(end + 1);
+    const arrow = inner.indexOf("=>");
+    if (arrow >= 0) {
+      const oldPart = inner.slice(0, arrow).trim();
+      const newPart = inner.slice(arrow + 2).trim();
+      return { oldPath: `${prefix}${oldPart}${suffix}`, newPath: `${prefix}${newPart}${suffix}` };
+    }
+  }
+  return { oldPath: display, newPath: display };
+}
+
+/**
+ * Parse `jj diff --summary` output (`A path`, `M path`, `D path`,
+ * `R {old => new}`) into the shared ChangedPath shape.
+ */
+export function parseJjSummary(output: string): ChangedPath[] {
+  const changes: ChangedPath[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    const code = trimmed[0]!;
+    const displayPath = trimmed.slice(1).trim();
+    if (code === "A") {
+      changes.push({ status: "added", oldPath: null, newPath: displayPath });
+    } else if (code === "D") {
+      changes.push({ status: "deleted", oldPath: displayPath, newPath: null });
+    } else if (code === "M") {
+      changes.push({ status: "modified", oldPath: displayPath, newPath: displayPath });
+    } else if (code === "R") {
+      const { oldPath, newPath } = parseBraceDisplayPath(displayPath);
+      changes.push({ status: "renamed", oldPath, newPath });
+    } else if (code === "C") {
+      // jj copies are rare; surface them as added files on the target path.
+      changes.push({ status: "added", oldPath: null, newPath: parseBraceDisplayPath(displayPath).newPath });
+    }
+  }
+  return changes;
+}
+
+/**
+ * Parse `jj diff --stat` output into the exact total changed lines per target
+ * path. The trailing `N files changed, ...` summary line is skipped.
+ */
+export function parseJjStatTotals(output: string): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    const pipeIndex = trimmed.lastIndexOf("|");
+    if (pipeIndex < 0) continue;
+    const displayPath = trimmed.slice(0, pipeIndex).trim();
+    const statPart = trimmed.slice(pipeIndex + 1).trim();
+    const match = statPart.match(/^(\d+)/);
+    if (match == null) continue;
+    totals.set(normalizeGitPath(parseBraceDisplayPath(displayPath).newPath), Number.parseInt(match[1]!, 10));
+  }
+  return totals;
+}
+
+function parseGitDiffTargetPath(header: string): string {
+  const rest = header.slice("diff --git ".length);
+  const bIndex = rest.indexOf(" b/");
+  const bPart = bIndex >= 0 ? rest.slice(bIndex + 3) : rest;
+  const unquoted = bPart.startsWith('"') && bPart.endsWith('"') ? bPart.slice(1, -1) : bPart;
+  return unquoted;
+}
+
+/**
+ * Parse `jj diff --git` output into exact per-file addition/deletion counts by
+ * counting patch lines, keyed by the target (new) path.
+ */
+export function parseJjGitDiffStats(output: string): Map<string, ChangeStats> {
+  const stats = new Map<string, ChangeStats>();
+  let currentPath: string | null = null;
+  let additions = 0;
+  let deletions = 0;
+
+  const flush = (): void => {
+    if (currentPath != null) {
+      stats.set(normalizeGitPath(currentPath), { additions, deletions });
+    }
+    currentPath = null;
+    additions = 0;
+    deletions = 0;
+  };
+
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      flush();
+      currentPath = parseGitDiffTargetPath(line);
+    } else if (currentPath != null) {
+      if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+      else if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+    }
+  }
+  flush();
+  return stats;
+}
+
+/**
+ * Resolve the jj base revision for the completed "change stack" scope: the
+ * merge base of the default branch (configured trunk, else remote/local main
+ * or master) and the parent of the working-copy commit `@`.
+ */
+async function getJjBranchBaseRevision(pi: ExtensionAPI, repoRoot: string): Promise<string | null> {
+  const candidates: string[] = [];
+  const trunkConfig = await pi.exec("jj", ["config", "list", "revset-aliases.\"trunk()\"", "--color", "never"], { cwd: repoRoot });
+  if (trunkConfig.code === 0 && trunkConfig.stdout.trim().length > 0) candidates.push("trunk()");
+  candidates.push("main@origin", "master@origin", "main", "master");
+
+  for (const candidate of candidates) {
+    const resolveResult = await runJjAllowFailure(pi, repoRoot, ["log", "-r", candidate, "--no-graph", "-T", "commit_id", "--color", "never"]);
+    if (resolveResult.trim().length === 0) continue;
+    const baseResult = await runJjAllowFailure(pi, repoRoot, ["log", "-r", `heads(::${candidate} & ::@-)`, "--no-graph", "-T", "commit_id", "--color", "never"]);
+    const commitId = baseResult.trim().split(/\r?\n/)[0];
+    if (commitId != null && commitId.length > 0) return commitId;
+  }
+  return null;
+}
+
+interface JjScopeData {
+  changes: ChangedPath[];
+  stats: Map<string, ChangeStats>;
+  largePaths: Set<string>;
+}
+
+/**
+ * Collect the changed files, exact per-file stats, and too-large paths for one
+ * jj diff scope (e.g. the working copy, a single revision, or a range).
+ */
+async function collectJjScopeData(pi: ExtensionAPI, repoRoot: string, scopeArgs: string[]): Promise<JjScopeData> {
+  const summaryOutput = await runJj(pi, repoRoot, [...scopeArgs, "--summary", "--color", "never"]);
+  const statOutput = await runJj(pi, repoRoot, [...scopeArgs, "--stat", "--color", "never"]);
+  const totals = parseJjStatTotals(statOutput);
+  const changes = parseJjSummary(summaryOutput)
+    .filter((change) => isReviewableFilePath(change.newPath ?? change.oldPath ?? ""));
+
+  const largePaths = new Set<string>();
+  await Promise.all(changes.map(async (change) => {
+    const key = normalizeGitPath(getChangeKey(change));
+    if (exceedsLargeDiffLineLimit({ additions: totals.get(key) ?? 0, deletions: 0 })) {
+      largePaths.add(key);
+      return;
+    }
+    if (change.newPath != null && await isLargeWorkingTreeFile(repoRoot, change.newPath)) {
+      largePaths.add(key);
+    }
+  }));
+
+  const stats = new Map<string, ChangeStats>();
+  const gitPaths = changes
+    .map((change) => change.newPath ?? change.oldPath)
+    .filter((path): path is string => path != null && !largePaths.has(normalizeGitPath(path)));
+  if (gitPaths.length > 0) {
+    const gitOutput = await runJj(pi, repoRoot, [...scopeArgs, "--git", "--color", "never", "--", ...gitPaths]);
+    const counted = parseJjGitDiffStats(gitOutput);
+    for (const [path, changeStats] of counted) stats.set(normalizeGitPath(path), changeStats);
+  }
+
+  for (const change of changes) {
+    const key = normalizeGitPath(getChangeKey(change));
+    if (stats.has(key)) continue;
+    const total = totals.get(key) ?? 0;
+    if (largePaths.has(key)) continue;
+    stats.set(key, { additions: total, deletions: 0 });
+  }
+
+  return { changes, stats, largePaths };
+}
+
+async function getJjReviewWindowData(pi: ExtensionAPI, repoRoot: string): Promise<{ repoRoot: string; files: ReviewFile[] }> {
+  const worktreeData = await collectJjScopeData(pi, repoRoot, ["diff"]);
+  const lastCommitData = await collectJjScopeData(pi, repoRoot, ["diff", "-r", "@-"]);
+  const branchBaseRevision = await getJjBranchBaseRevision(pi, repoRoot);
+  const branchData = branchBaseRevision == null
+    ? { changes: [], stats: new Map<string, ChangeStats>(), largePaths: new Set<string>() }
+    : await collectJjScopeData(pi, repoRoot, ["diff", "--from", branchBaseRevision, "--to", "@-"]);
+
+  const trackedFilesOutput = await runJj(pi, repoRoot, ["file", "list"]);
+  const currentPaths = uniquePaths(parseTrackedPaths(trackedFilesOutput)).filter(isReviewableFilePath);
+  const currentPathSet = new Set(currentPaths);
+
+  const branchContentsByPath = new Map<string, string>();
+  await Promise.all(branchData.changes.map(async (change) => {
+    if (change.newPath == null) return;
+    const key = normalizeGitPath(getChangeKey(change));
+    if (branchData.largePaths.has(key)) return;
+    branchContentsByPath.set(normalizeGitPath(change.newPath), await getJjRevisionContent(pi, repoRoot, "@-", change.newPath));
+  }));
+  const branchReferenceGraph = getChangedFileReferenceGraph(branchData.changes, branchContentsByPath);
+
+  const seeds = new Map<string, ReviewFileSeed>();
+
+  for (const change of worktreeData.changes) {
+    const key = getChangeKey(change);
+    const seed = upsertSeed(seeds, key, () => createSeed(key, change.newPath != null));
+    seed.worktreeStatus = change.status;
+    seed.hasWorkingTreeFile = change.newPath != null;
+    seed.inGitDiff = true;
+    seed.gitDiff = toComparison(change, worktreeData.stats.get(normalizeGitPath(key)), undefined, { isTooLarge: worktreeData.largePaths.has(normalizeGitPath(key)) });
+  }
+
+  for (const change of branchData.changes) {
+    const key = getChangeKey(change);
+    const seed = upsertSeed(seeds, key, () => createSeed(key, change.newPath != null && currentPathSet.has(change.newPath)));
+    seed.inAllFiles = true;
+    seed.allFiles = toComparison(change, branchData.stats.get(normalizeGitPath(key)), { originalRevision: branchBaseRevision ?? undefined, modifiedRevision: "@-" }, { isTooLarge: branchData.largePaths.has(normalizeGitPath(key)) });
+    seed.allFilesReferenceCount = branchReferenceGraph.counts.get(normalizeGitPath(key)) ?? 0;
+    seed.allFilesOutgoingReferences = branchReferenceGraph.outgoing.get(normalizeGitPath(key)) ?? [];
+    seed.allFilesIncomingReferences = branchReferenceGraph.incoming.get(normalizeGitPath(key)) ?? [];
+  }
+
+  for (const change of lastCommitData.changes) {
+    const key = getChangeKey(change);
+    const seed = upsertSeed(seeds, key, () => createSeed(key, change.newPath != null && currentPathSet.has(change.newPath)));
+    seed.inLastCommit = true;
+    seed.lastCommit = toComparison(change, lastCommitData.stats.get(normalizeGitPath(key)), undefined, { isTooLarge: lastCommitData.largePaths.has(normalizeGitPath(key)) });
+  }
+
+  if (seeds.size === 0) {
+    for (const path of currentPaths) {
+      const seed = createSeed(path, true);
+      seed.inAllFiles = true;
+      seeds.set(path, seed);
+    }
+  }
+
+  const files = [...seeds.values()].map(createReviewFile).sort(compareReviewFiles);
+  return { repoRoot, files };
+}
+
+async function getJjRevisionContent(pi: ExtensionAPI, repoRoot: string, revision: string, path: string): Promise<string> {
+  const result = await pi.exec("jj", ["file", "show", "--revision", revision, path, "--color", "never"], { cwd: repoRoot });
+  if (result.code !== 0) return "";
+  return result.stdout;
+}
+
+async function getJjSubmoduleReviewWindowData(pi: ExtensionAPI, repoRoot: string, oldSha: string, newSha: string): Promise<{ repoRoot: string; files: ReviewFile[] }> {
+  const scopeData = await collectJjScopeData(pi, repoRoot, ["diff", "--from", oldSha, "--to", newSha]);
+  const contentsByPath = new Map<string, string>();
+  await Promise.all(scopeData.changes.map(async (change) => {
+    if (change.newPath == null) return;
+    const key = normalizeGitPath(getChangeKey(change));
+    if (scopeData.largePaths.has(key)) return;
+    contentsByPath.set(normalizeGitPath(change.newPath), await getJjRevisionContent(pi, repoRoot, newSha, change.newPath));
+  }));
+  const referenceGraph = getChangedFileReferenceGraph(scopeData.changes, contentsByPath);
+  const seeds = new Map<string, ReviewFileSeed>();
+
+  for (const change of scopeData.changes) {
+    const key = getChangeKey(change);
+    const seed = upsertSeed(seeds, key, () => createSeed(key, change.newPath != null));
+    seed.inAllFiles = true;
+    seed.allFiles = toComparison(change, scopeData.stats.get(normalizeGitPath(key)), { originalRevision: oldSha, modifiedRevision: newSha }, { isTooLarge: scopeData.largePaths.has(normalizeGitPath(key)) });
+    seed.allFilesReferenceCount = referenceGraph.counts.get(normalizeGitPath(key)) ?? 0;
+    seed.allFilesOutgoingReferences = referenceGraph.outgoing.get(normalizeGitPath(key)) ?? [];
+    seed.allFilesIncomingReferences = referenceGraph.incoming.get(normalizeGitPath(key)) ?? [];
+  }
+
+  return { repoRoot, files: [...seeds.values()].map(createReviewFile).sort(compareReviewFiles) };
+}
+
+export async function getSubmoduleReviewWindowData(pi: ExtensionAPI, repoRoot: string, oldSha: string, newSha: string): Promise<ReviewWindowData> {
+  const vcs = await detectVcsAt(repoRoot);
+  const data = vcs === "jj"
+    ? await getJjSubmoduleReviewWindowData(pi, repoRoot, oldSha, newSha)
+    : await getGitSubmoduleReviewWindowData(pi, repoRoot, oldSha, newSha);
+  return { vcs, ...data };
+}
+
+async function getGitSubmoduleReviewWindowData(pi: ExtensionAPI, repoRoot: string, oldSha: string, newSha: string): Promise<{ repoRoot: string; files: ReviewFile[] }> {
   const diffOutput = await runGit(pi, repoRoot, ["diff", "--find-renames", "-M", "--name-status", oldSha, newSha, "--"]);
   const rawOutput = await runGit(pi, repoRoot, ["diff", "--find-renames", "-M", "--raw", "-z", oldSha, newSha, "--"]);
   const numStatOutput = await runGitAllowFailure(pi, repoRoot, ["diff", "--find-renames", "-M", "--numstat", oldSha, newSha, "--"]);
@@ -838,6 +1180,12 @@ export async function getSubmoduleReviewWindowData(pi: ExtensionAPI, repoRoot: s
 }
 
 export async function loadReviewFileContents(pi: ExtensionAPI, repoRoot: string, file: ReviewFile, scope: ReviewScope): Promise<ReviewFileContents> {
+  const vcs = await detectVcsAt(repoRoot);
+  if (vcs === "jj") return loadJjReviewFileContents(pi, repoRoot, file, scope);
+  return loadGitReviewFileContents(pi, repoRoot, file, scope);
+}
+
+async function loadGitReviewFileContents(pi: ExtensionAPI, repoRoot: string, file: ReviewFile, scope: ReviewScope): Promise<ReviewFileContents> {
   const comparison = scope === "git-diff" ? file.gitDiff : scope === "last-commit" ? file.lastCommit : file.allFiles;
 
   if (scope === "all-files" && comparison == null) {
@@ -869,6 +1217,43 @@ export async function loadReviewFileContents(pi: ExtensionAPI, repoRoot: string,
     : modifiedRevision == null
       ? await getWorkingTreeContent(repoRoot, comparison.newPath)
       : await getRevisionContent(pi, repoRoot, modifiedRevision, comparison.newPath);
+
+  return { originalContent, modifiedContent };
+}
+
+async function loadJjReviewFileContents(pi: ExtensionAPI, repoRoot: string, file: ReviewFile, scope: ReviewScope): Promise<ReviewFileContents> {
+  const comparison = scope === "git-diff" ? file.gitDiff : scope === "last-commit" ? file.lastCommit : file.allFiles;
+
+  if (scope === "all-files" && comparison == null) {
+    const content = file.hasWorkingTreeFile ? await getWorkingTreeContent(repoRoot, file.path) : "";
+    return { originalContent: content, modifiedContent: content };
+  }
+
+  if (comparison == null || comparison.isTooLarge) {
+    return { originalContent: "", modifiedContent: "" };
+  }
+
+  const originalRevision = comparison.originalRevision !== undefined
+    ? comparison.originalRevision
+    : scope === "git-diff"
+      ? "@-"
+      : scope === "last-commit"
+        ? "@--"
+        : null;
+  const modifiedRevision = comparison.modifiedRevision !== undefined
+    ? comparison.modifiedRevision
+    : scope === "git-diff"
+      ? null
+      : scope === "last-commit"
+        ? "@-"
+        : "@";
+
+  const originalContent = comparison.oldPath == null || originalRevision == null ? "" : await getJjRevisionContent(pi, repoRoot, originalRevision, comparison.oldPath);
+  const modifiedContent = comparison.newPath == null
+    ? ""
+    : modifiedRevision == null
+      ? await getWorkingTreeContent(repoRoot, comparison.newPath)
+      : await getJjRevisionContent(pi, repoRoot, modifiedRevision, comparison.newPath);
 
   return { originalContent, modifiedContent };
 }
